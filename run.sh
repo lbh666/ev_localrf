@@ -9,5 +9,5 @@ pip install tqdm scikit-image opencv-python configargparse lpips imageio-ffmpeg 
  matplotlib scipy plyfile joblib timm -i https://pypi.mirrors.ustc.edu.cn/simple
 
 
-python localTensoRF/train.py --datadir  ${OUTDIR}/TNT/Church_3000_upsampled_x2_1_fps/ --logdir ${OUTDIR}/localrf_results/Church_3000_upsampled_x2_1_fps \
- --fov 71
+python localTensoRF/train.py --datadir  ${OUTDIR}/TNT/Church_3000_upsampled_x2_6_fps/ --logdir ${OUTDIR}/localrf_results/Church_3000_upsampled_x2_6_fps_noflow \
+ --fov 71 --loss_flow_weight_inital 0
