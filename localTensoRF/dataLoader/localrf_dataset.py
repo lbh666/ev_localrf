@@ -81,7 +81,8 @@ class LocalRFDataset(Dataset):
         self.test_paths = []
         for idx, image_path in enumerate(self.image_paths):
             fbase = os.path.splitext(image_path)[0]
-            index = int(fbase) if fbase.isnumeric() else idx
+            # index = int(fbase) if fbase.isnumeric() else idx
+            index = idx
             if test_frame_every > 0 and index % test_frame_every == 0:
                 self.test_paths.append(image_path)
                 self.test_mask.append(1)
