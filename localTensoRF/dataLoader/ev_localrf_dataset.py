@@ -35,6 +35,7 @@ class LocalRFDataset(Dataset):
         subsequence=[0, -1],
         test_frame_every=10,
         frame_step=1,
+        events_in_imgs = 2
     ):
         self.root_dir = datadir
         self.split = split
@@ -43,6 +44,7 @@ class LocalRFDataset(Dataset):
         self.load_depth = load_depth
         self.load_flow = load_flow
         self.frame_step = frame_step
+        self.events_in_imgs = events_in_imgs
 
         if with_preprocessed_poses:
             with open(os.path.join(self.root_dir, "transforms.json"), 'r') as f:
@@ -71,6 +73,7 @@ class LocalRFDataset(Dataset):
 
         else:
             self.image_paths = sorted(os.listdir(os.path.join(self.root_dir, "images")))
+            self.edge_map_paths = sorted(os.listdir(os.path.join(self.root_dir, "edge_maps")))
         if subsequence != [0, -1]:
             self.image_paths = self.image_paths[subsequence[0]:subsequence[1]]
 
@@ -96,6 +99,9 @@ class LocalRFDataset(Dataset):
         self.num_images = len(self.image_paths)
         self.all_fbases = {os.path.splitext(image_path)[0]: idx for idx, image_path in enumerate(self.image_paths)}
 
+        event_step = (int(os.path.splitext(self.image_paths[1])[0]) - int(os.path.splitext(self.image_paths[0])[0])) / self.events_in_imgs
+        self.event_step = int(event_step)
+
         self.white_bg = False
 
         self.near_far = [0.1, 1e3] # Dummi
@@ -105,6 +111,7 @@ class LocalRFDataset(Dataset):
         self.all_invdepths = None
         self.all_fwd_flow, self.all_fwd_mask, self.all_bwd_flow, self.all_bwd_mask = None, None, None, None
         self.all_loss_weights = None
+        self.all_edges = None
 
         self.active_frames_bounds = [0, 0]
         self.loaded_frames = 0
@@ -127,6 +134,7 @@ class LocalRFDataset(Dataset):
 
     def deactivate_frames(self, first_frame):
         n_frames = first_frame - self.active_frames_bounds[0]
+        n_events = n_frames * self.events_in_imgs
         self.active_frames_bounds[0] = first_frame
 
         self.all_rgbs = self.all_rgbs[n_frames * self.n_px_per_frame:] 
@@ -137,6 +145,7 @@ class LocalRFDataset(Dataset):
             self.all_fwd_mask = self.all_fwd_mask[n_frames * self.n_px_per_frame:]
             self.all_bwd_flow = self.all_bwd_flow[n_frames * self.n_px_per_frame:]
             self.all_bwd_mask = self.all_bwd_mask[n_frames * self.n_px_per_frame:]
+            self.all_edges = self.all_bwd_mask[n_events * self.n_px_per_frame:]
         self.all_loss_weights = self.all_loss_weights[n_frames * self.n_px_per_frame:]
 
 
@@ -214,10 +223,31 @@ class LocalRFDataset(Dataset):
                 "mask": mask,
             }
 
+        def read_event(i):
+            left_idx = int(os.path.splitext(self.image_paths[i])[0])
+            edge_maps = []
+            for i in range(self.events_in_imgs): # add events_in_imgs event frames
+                tmp_path = os.path.join(self.root_dir, 'edge_maps', f'{(i+1)*self.event_step+left_idx:09d}.png')
+                if os.path.exists(tmp_path):
+                    img = cv2.imread(tmp_path)
+                    img = img.astype(np.float32) / 255.
+                    if img.ndim == 3:
+                        img = img.mean(axis=-1)
+                    if self.downsampling != -1:
+                        scale = 1 / self.downsampling
+                        img = cv2.resize(img, None, 
+                            fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                    edge_maps.append(img)
+            return {"edge_maps": np.array(edge_maps)}
+                    
         n_frames_to_load = min(self.frames_chunk, self.num_images - self.loaded_frames)
         all_data = Parallel(n_jobs=-1, backend="threading")(
             delayed(read_image)(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) 
         )
+        # all_event_data = Parallel(n_jobs=-1, backend="threading")(
+        #     delayed(read_event)(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) 
+        # )
+        all_event_data = [read_event(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load)]
         self.loaded_frames += n_frames_to_load
         all_rgbs = [data["img"] for data in all_data]
         all_invdepths = [data["invdepth"] for data in all_data]
@@ -226,6 +256,7 @@ class LocalRFDataset(Dataset):
         all_bwd_flow = [data["bwd_flow"] for data in all_data]
         all_bwd_mask = [data["bwd_mask"] for data in all_data]
         all_mask = [data["mask"] for data in all_data]
+        all_edges = [data["edge_maps"] for data in all_event_data]
 
         all_laplacian = [
                 np.ones_like(img[..., 0]) * cv2.Laplacian(
@@ -249,6 +280,7 @@ class LocalRFDataset(Dataset):
                 self.all_bwd_mask = np.stack(all_bwd_mask, 0)
         else:
             self.all_rgbs = concatenate_append(self.all_rgbs, all_rgbs, 3)
+            self.all_edges = concatenate_append(self.all_edges, all_edges, 1)
             if self.load_depth:
                 self.all_invdepths = concatenate_append(self.all_invdepths, all_invdepths, 1)
             if self.load_flow:
