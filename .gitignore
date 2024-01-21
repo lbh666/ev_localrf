@@ -148,6 +148,7 @@ comparison/FuSta/raft_models/raft-things.pth
 
 weights
 models
-debug_output
+debug_output*
 events.*
 debug.py
+*.png

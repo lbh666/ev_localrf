@@ -35,6 +35,7 @@ def config_parser(cmd=None):
 
     # loader options
     parser.add_argument("--batch_size", type=int, default=4096)
+    parser.add_argument("--n_views", type=int, default=16)
 
     ## training options
     # learning rate
