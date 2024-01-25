@@ -23,7 +23,7 @@ from opt import config_parser
 from renderer import render
 from utils.utils import (get_fwd_bwd_cam2cams, smooth_poses_spline)
 from utils.utils import (N_to_reso, TVLoss, draw_poses, get_pred_flow,
-                         compute_depth_loss)
+                         compute_depth_loss, draw_poses_and_boxes)
 
 
 def save_transforms(poses_mtx, transform_path, local_tensorfs, train_dataset=None):
@@ -151,6 +151,7 @@ def render_test(args):
         with_preprocessed_poses=args.with_preprocessed_poses,
         subsequence=args.subsequence,
         frame_step=args.frame_step,
+        eventdir=args.eventdir
     )
     test_dataset = LocalRFDataset(
         f"{args.datadir}",
@@ -162,6 +163,7 @@ def render_test(args):
         with_preprocessed_poses=args.with_preprocessed_poses,
         subsequence=args.subsequence,
         frame_step=args.frame_step,
+        eventdir=args.eventdir
     )
 
     if args.ckpt is None:
@@ -231,6 +233,7 @@ def reconstruction(args):
         n_init_frames=args.n_init_frames,
         subsequence=args.subsequence,
         frame_step=args.frame_step,
+        eventdir=args.eventdir
     )
     test_dataset = LocalRFDataset(
         f"{args.datadir}",
@@ -242,6 +245,7 @@ def reconstruction(args):
         with_preprocessed_poses=args.with_preprocessed_poses,
         subsequence=args.subsequence,
         frame_step=args.frame_step,
+        eventdir=args.eventdir
     )
     near_far = train_dataset.near_far
 
@@ -470,6 +474,18 @@ def reconstruction(args):
 
         # Add new RF
         if can_add_rf:
+            # visualize trajectory and log the sliding windows
+            os.makedirs(f"{logfolder}/traj", exist_ok=True)
+            poses_mtx = local_tensorfs.get_cam2world().detach().cpu()
+            t_w2rf = torch.stack(list(local_tensorfs.world2rf), dim=0).detach().cpu()
+            RF_mtx_inv = torch.cat([torch.stack(len(t_w2rf) * [torch.eye(3)]), -t_w2rf.clone()[..., None]], axis=-1)
+            aabb = local_tensorfs.tensorfs[0].aabb.detach().cpu()[None]
+            all_poses = torch.cat([poses_mtx,  RF_mtx_inv], dim=0)
+            colours = ["C1"] * poses_mtx.shape[0] + ["C2"] * RF_mtx_inv.shape[0]
+            img = draw_poses_and_boxes(all_poses, colours, -t_w2rf.clone(), aabb)
+            cv2.imwrite(f'{logfolder}/traj/{t_w2rf.shape[0]}_rfs.png', img[...,::-1])
+            logger.info(f'current sliding windows: [{local_tensorfs.active_frames_bounds[0]}, {local_tensorfs.active_frames_bounds[0]})')
+
             if train_dataset.has_left_frames():
                 local_tensorfs.append_rf(n_added_frames)
                 n_added_frames = 0
@@ -540,10 +556,10 @@ def reconstruction(args):
             poses_mtx = local_tensorfs.get_cam2world().detach().cpu()
             t_w2rf = torch.stack(list(local_tensorfs.world2rf), dim=0).detach().cpu()
             RF_mtx_inv = torch.cat([torch.stack(len(t_w2rf) * [torch.eye(3)]), -t_w2rf.clone()[..., None]], axis=-1)
-
+            aabb = local_tensorfs.tensorfs[0].aabb.detach().cpu()[None]
             all_poses = torch.cat([poses_mtx,  RF_mtx_inv], dim=0)
             colours = ["C1"] * poses_mtx.shape[0] + ["C2"] * RF_mtx_inv.shape[0]
-            img = draw_poses(all_poses, colours)
+            img = draw_poses_and_boxes(all_poses, colours, -t_w2rf.clone(), aabb)
             writer.add_image("poses/all", (np.transpose(img, (2, 0, 1)) / 255.0).astype(np.float32), iteration)
 
             # Get runtime 
@@ -557,7 +573,7 @@ def reconstruction(args):
                 logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, ETA:{eta_str}")
             start_time = time.time()
 
-        if (iteration % args.vis_every == args.vis_every - 1):
+        if (iteration % args.vis_every == 0):
             poses_mtx = local_tensorfs.get_cam2world().detach()
             rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_err_tb, loc_metrics = render(
                 test_dataset,

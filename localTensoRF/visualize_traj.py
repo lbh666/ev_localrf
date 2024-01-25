@@ -2,14 +2,14 @@ import torch, open3d
 import numpy as np
 import matplotlib.pyplot as plt
 import open3d as o3d
-from utils.utils import mtx_to_sixD, sixD_to_mtx
+from utils.utils import sixD_to_mtx
 import trimesh
 import matplotlib
 
 matplotlib.use('TkAgg')
 
 # load the data first
-x = torch.load(r'checkpoints.th', map_location='cuda')
+x = torch.load(r"C:\Users\Administrator\Desktop\logs\events_2fps_200dd_output\checkpoints_tmp.th", map_location='cuda')
 num_imgs, num_rfs = x['state_dict']['blending_weights'].shape
 poses = []
 idx = 0
@@ -42,9 +42,9 @@ vizualizer.create_window()
 vizualizer.create_window(width=WIDTH, height=HEIGHT)
 
 # Step 3 - Add objects to visualizer
-vizualizer.add_geometry(meshFrame)
+# vizualizer.add_geometry(meshFrame)
 # Step 4 - Get camera lines
-for pose in poses:
+for pose in poses[40:]:
     standardCameraParametersObj  = vizualizer.get_view_control().convert_to_pinhole_camera_parameters()
     cameraLines = open3d.geometry.LineSet.create_camera_visualization(intrinsic=standardCameraParametersObj.intrinsic, 
                                                                       extrinsic=np.linalg.inv(pose),

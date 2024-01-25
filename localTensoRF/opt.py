@@ -13,6 +13,9 @@ def config_parser(cmd=None):
         "--datadir", type=str, default="./data/llff/fern", help="input data directory"
     )
     parser.add_argument(
+        "--eventdir", type=str, default=r"E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events", help="input data directory"
+    )
+    parser.add_argument(
         "--progress_refresh_rate",
         type=int,
         default=200,

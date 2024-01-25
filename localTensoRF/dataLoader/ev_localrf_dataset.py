@@ -42,6 +42,7 @@ class LocalRFDataset(Dataset):
         test_frame_every=10,
         frame_step=1,
         events_in_imgs = 2,
+        eventdir= None
     ):
         self.root_dir = datadir
         self.split = split
@@ -56,7 +57,7 @@ class LocalRFDataset(Dataset):
         self.image_idx = [get_digit(x) for x in self.image_paths]
         event_step = (get_digit(self.image_paths[1]) - get_digit(self.image_paths[0])) / (self.events_in_imgs + 1)
         self.event_step = int(event_step)
-        tmp_ = sorted(glob.glob(os.path.join(r'E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events', "*")))
+        tmp_ = sorted(glob.glob(os.path.join(eventdir, "*")))
         self.event_map_paths = [self.image_paths[0]]
         for path in tmp_:
             if get_digit(path) not in self.image_idx and (get_digit(path) - get_digit(self.event_map_paths[-1])) % self.event_step == 0:
@@ -129,6 +130,7 @@ class LocalRFDataset(Dataset):
 
 
         self.all_rgbs = self.all_rgbs[n_frames * self.n_px_per_frame:] 
+        self.all_events = self.all_rgbs[n_events * self.n_px_per_frame:] 
         if self.load_depth:
             self.all_invdepths = self.all_invdepths[n_frames * self.n_px_per_frame:]
         if self.load_flow:
@@ -144,7 +146,7 @@ class LocalRFDataset(Dataset):
     def read_meta(self):
         def read_image(i):
             image_path = self.all_paths[i]
-            print(f'load image: {image_path}')
+            # print(f'load image: {image_path}')
             motion_mask_path = os.path.join(self.root_dir, "masks", 
                 f"{os.path.splitext(os.path.basename(image_path))[0]}.png")
             if not os.path.isfile(motion_mask_path):
@@ -240,11 +242,11 @@ class LocalRFDataset(Dataset):
             if "events" in image_path:
                 return read_event(i)
             return read_image(i)
-        n_frames_to_load = min(self.active_frames_bounds[-1] - self.loaded_frames, self.num_images - self.loaded_frames)
-        # all_data = Parallel(n_jobs=-1, backend="threading")(
-        #     delayed(read_image_and_event)(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) 
-        # )
-        all_data = [read_image_and_event(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) ]
+        n_frames_to_load = min(self.frames_chunk, self.num_images - self.loaded_frames)
+        all_data = Parallel(n_jobs=-1, backend="threading")(
+            delayed(read_image_and_event)(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) 
+        )
+        # all_data = [read_image_and_event(i) for i in range(self.loaded_frames, self.loaded_frames + n_frames_to_load) ]
 
         self.loaded_frames += n_frames_to_load
         all_rgbs = [data["img"] for data in all_data if data and "img" in data]

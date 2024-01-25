@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Copyright (c) 2022 Anpei Chen
 
-import os
+import os, logging, datetime, math
 from signal import Handlers
 
 import cv2
@@ -176,6 +176,16 @@ def render(
             cv2.imwrite(f"{savePath}/depth_maps/{fbase}.{img_format}", depth_map_vis.numpy()[..., ::-1])
             if save_raw_depth:
                 cv2.imwrite(f"{savePath}/depth_maps/{fbase}.tiff", depth_map.cpu().numpy())
+    if test: # log the metric
+        psnr = []
+        ssim = []
+        logger = logging.getLogger('train')
+        for fbase in metrics.values():
+            psnr.append(-10 * math.log10(fbase['mse']))
+            ssim.append(fbase['ssim'])
+        psnr = np.array(psnr).mean()
+        ssim = np.array(ssim).mean()
+        logger.info(f"Test ({len(metrics.keys())}/{len(test_dataset.all_fbases)}) data, PSNR: {psnr:.4f}, SSIM:{ssim:.4f}")
 
     if save_video and savePath is not None:
         os.makedirs(savePath, exist_ok=True)
