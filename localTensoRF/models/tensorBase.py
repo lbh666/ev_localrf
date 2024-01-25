@@ -2,7 +2,7 @@
 # Copyright (c) 2022 Anpei Chen
 
 from cProfile import label
-import time
+import time, logging
 
 import numpy as np
 import torch
@@ -287,6 +287,7 @@ class TensorBase(torch.nn.Module):
         self.init_render_func(shadingMode, pos_pe, view_pe, fea_pe, featureC, device)
 
     def init_render_func(self, shadingMode, pos_pe, view_pe, fea_pe, featureC, device):
+        logger = logging.getLogger('train')
         if shadingMode == "MLP_PE":
             self.renderModule = MLPRender_PE(
                 self.app_dim, view_pe, pos_pe, featureC
@@ -309,14 +310,15 @@ class TensorBase(torch.nn.Module):
             assert self.app_dim == 3
             self.renderModule = RGBRender
         else:
-            print("Unrecognized shading module")
+            logger.info("Unrecognized shading module")
             exit()
-        print("pos_pe", pos_pe, "view_pe", view_pe, "fea_pe", fea_pe)
-        print(self.renderModule)
+        logger.info(f"pos_pe: {pos_pe}, view_pe: {view_pe}, fea_pe: {fea_pe}")
+        logger.info(self.renderModule)
 
     def update_stepSize(self, gridSize):
-        print("aabb", self.aabb.view(-1))
-        print("grid size", gridSize)
+        logger = logging.getLogger('train')
+        logger.info(f"aabb: {self.aabb.view(-1)}")
+        logger.info(f"grid size: {gridSize}")
         self.aabbSize = self.aabb[1] - self.aabb[0]
         self.invaabbSize = torch.nn.Parameter(2.0 / self.aabbSize, requires_grad=False)
         self.gridSize = torch.LongTensor(gridSize).to(self.device)
@@ -324,8 +326,8 @@ class TensorBase(torch.nn.Module):
         self.stepSize = torch.mean(self.units) * self.step_ratio
         self.aabbDiag = torch.sqrt(torch.sum(torch.square(self.aabbSize)))
         self.nSamples = int((self.aabbDiag / self.stepSize).item()) + 1
-        print("sampling step size: ", self.stepSize)
-        print("sampling number: ", self.nSamples)
+        logger.info(f"sampling step size: {self.stepSize}", )
+        logger.info(f"sampling number: {self.nSamples}", )
 
     def init_svd_volume(self, res, device):
         pass
@@ -449,7 +451,8 @@ class TensorBase(torch.nn.Module):
     def filtering_rays(
         self, all_rays, all_rgbs, N_samples=256, chunk=10240 * 5, bbox_only=False
     ):
-        print("========> filtering rays ...")
+        logger = logging.getLogger('train')
+        logger.info("========> filtering rays ...")
         tt = time.time()
 
         N = torch.tensor(all_rays.shape[:-1]).prod()
@@ -487,7 +490,7 @@ class TensorBase(torch.nn.Module):
 
         mask_filtered = torch.cat(mask_filtered).view(all_rgbs.shape[:-1])
 
-        print(
+        logger.info(
             f"Ray filtering done! takes {time.time()-tt} s. ray mask ratio: {torch.sum(mask_filtered) / N}"
         )
         return all_rays[mask_filtered], all_rgbs[mask_filtered]
@@ -516,6 +519,7 @@ class TensorBase(torch.nn.Module):
 
     @torch.no_grad()
     def updateAlphaMask(self, gridSize=(200,200,200)):
+        logger = logging.getLogger('train')
         torch.cuda.empty_cache()
         device = self.device
         self.to("cpu")
@@ -530,7 +534,7 @@ class TensorBase(torch.nn.Module):
 
         self.alphaMask = AlphaGridMask("cpu", self.aabb, alpha)
         self.alphaMask = self.alphaMask.to(self.device)
-        print(f"alpha rest %%%f"%(torch.sum(alpha)/total_voxels*100))
+        logger.info(f"alpha rest %%%f"%(torch.sum(alpha)/total_voxels*100))
         torch.cuda.empty_cache()
         self.to(device)
         torch.cuda.empty_cache()

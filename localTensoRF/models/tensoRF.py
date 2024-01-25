@@ -2,7 +2,7 @@
 # Copyright (c) 2022 Anpei Chen
 
 from cmath import nan
-import torch
+import torch, logging
 import torch.nn.functional as F
 
 from .tensorBase import TensorBase
@@ -222,6 +222,7 @@ class TensorVMSplit(TensorBase):
 
     @torch.no_grad()
     def upsample_volume_grid(self, res_target):
+        logger = logging.getLogger('train')
         self.app_plane, self.app_line = self.up_sampling_VM(
             self.app_plane, self.app_line, res_target
         )
@@ -230,17 +231,18 @@ class TensorVMSplit(TensorBase):
         )
 
         self.update_stepSize(res_target)
-        print(f"upsamping to {res_target}")
+        logger.info(f"upsamping to {res_target}")
 
     @torch.no_grad()
     def shrink(self, new_aabb):
-        print("====> shrinking ...")
+        logger = logging.getLogger('train')
+        logger.info("====> shrinking ...")
         xyz_min, xyz_max = new_aabb
         t_l, b_r = (xyz_min - self.aabb[0]) / self.units, (
             xyz_max - self.aabb[0]
         ) / self.units
-        # print(new_aabb, self.aabb)
-        # print(t_l, b_r,self.alphaMask.alpha_volume.shape)
+        # logger.info(new_aabb, self.aabb)
+        # logger.info(t_l, b_r,self.alphaMask.alpha_volume.shape)
         t_l, b_r = torch.round(torch.round(t_l)).long(), torch.round(b_r).long() + 1
         b_r = torch.stack([b_r, self.gridSize]).amin(0)
 
@@ -269,7 +271,7 @@ class TensorVMSplit(TensorBase):
             correct_aabb = torch.zeros_like(new_aabb)
             correct_aabb[0] = (1 - t_l_r) * self.aabb[0] + t_l_r * self.aabb[1]
             correct_aabb[1] = (1 - b_r_r) * self.aabb[0] + b_r_r * self.aabb[1]
-            print("aabb", new_aabb, "\ncorrect aabb", correct_aabb)
+            logger.info("aabb", new_aabb, "\ncorrect aabb", correct_aabb)
             new_aabb = correct_aabb
 
         newSize = b_r - t_l
