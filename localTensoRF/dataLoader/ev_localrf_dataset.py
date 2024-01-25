@@ -392,7 +392,7 @@ class LocalRFDataset(Dataset):
     def sample(self, batch_size, is_refining, optimize_poses, n_views=16):
         event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
         
-        if event_ratio*0.5 > random.uniform(0, 1):
+        if event_ratio * 0.5 > random.uniform(0, 1):
             return self.sample_event(batch_size, is_refining, optimize_poses, n_views)
         else:
             return self.sample_img(batch_size, is_refining, optimize_poses, n_views)

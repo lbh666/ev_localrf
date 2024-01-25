@@ -199,6 +199,15 @@ def config_parser(cmd=None):
         "--vis_every", type=int, default=10000, help="Frequency of visualize the test images."
     )
     parser.add_argument("--device", type=str, default="cuda:0")
+
+    # S3IM options
+    parser.add_argument("--s3im_weight", type=float, default=0.0)
+    parser.add_argument("--s3im_kernel", type=int, default=4)
+    parser.add_argument("--s3im_stride", type=int, default=4)
+    parser.add_argument("--s3im_repeat_time", type=int, default=10)
+    parser.add_argument("--s3im_patch_height", type=int, default=64)
+    parser.add_argument("--s3im_patch_width", type=int, default=64)
+
     if cmd is not None:
         return parser.parse_args(cmd)
     else:

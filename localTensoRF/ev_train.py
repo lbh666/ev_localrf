@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import torch
 from tqdm.auto import tqdm
-
+from model_components import S3IM
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import json
 import sys
@@ -207,6 +207,7 @@ def render_test(args):
 
 def reconstruction(args):
     # Apply speedup factors
+    s3im_func = S3IM(kernel_size=args.s3im_kernel, stride=args.s3im_stride, repeat_time=args.s3im_repeat_time, patch_height=args.s3im_patch_height, patch_width=args.s3im_patch_width).cuda()
     args.n_iters_per_frame = int(args.n_iters_per_frame / args.refinement_speedup_factor)
     args.n_iters_reg = int(args.n_iters_reg / args.refinement_speedup_factor)
     args.upsamp_list = [int(upsamp / args.refinement_speedup_factor) for upsamp in args.upsamp_list]
@@ -379,6 +380,10 @@ def reconstruction(args):
                 
             loss = loss.mean()
             total_loss = loss
+
+            if args.s3im_weight > 0:
+                s3im_pp = args.s3im_weight * s3im_func(rgb_map, rgb_train)
+                total_loss += s3im_pp
             writer.add_scalar("train/rgb_loss", loss, global_step=iteration)
 
             ## Regularization
@@ -439,6 +444,9 @@ def reconstruction(args):
         else:
             rgb_train = torch.from_numpy(data_blob["events"]).to(args.device)
             loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
+            if args.s3im_weight > 0:
+                s3im_pp = args.s3im_weight * s3im_func(rgb_map.mean(dim=-1, keepdim=True), rgb_train)
+                total_loss += s3im_pp
             total_loss = loss
 
         # Optimizes
@@ -484,7 +492,7 @@ def reconstruction(args):
             colours = ["C1"] * poses_mtx.shape[0] + ["C2"] * RF_mtx_inv.shape[0]
             img = draw_poses_and_boxes(all_poses, colours, -t_w2rf.clone(), aabb)
             cv2.imwrite(f'{logfolder}/traj/{t_w2rf.shape[0]}_rfs.png', img[...,::-1])
-            logger.info(f'current sliding windows: [{local_tensorfs.active_frames_bounds[0]}, {local_tensorfs.active_frames_bounds[0]})')
+            logger.info(f'current sliding windows: [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
 
             if train_dataset.has_left_frames():
                 local_tensorfs.append_rf(n_added_frames)
