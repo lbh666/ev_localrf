@@ -41,7 +41,7 @@ class LocalRFDataset(Dataset):
         subsequence=[0, -1],
         test_frame_every=10,
         frame_step=1,
-        events_in_imgs = 2,
+        events_in_imgs = 1,
     ):
         self.root_dir = datadir
         self.split = split
@@ -56,13 +56,13 @@ class LocalRFDataset(Dataset):
         self.image_idx = [get_digit(x) for x in self.image_paths]
         event_step = (get_digit(self.image_paths[1]) - get_digit(self.image_paths[0])) / (self.events_in_imgs + 1)
         self.event_step = int(event_step)
-        tmp_ = sorted(glob.glob(os.path.join(r'E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events', "*")))
-        self.event_map_paths = [self.image_paths[0]]
+        tmp_ = sorted(glob.glob(os.path.join(r'E:\TNT\training_data\images\Church_3000_upsampled_x2\edge_maps', "*")))
+        self.edge_map_paths = [self.image_paths[0]]
         for path in tmp_:
-            if get_digit(path) not in self.image_idx and (get_digit(path) - get_digit(self.event_map_paths[-1])) % self.event_step == 0:
-                self.event_map_paths.append(path)
-        self.event_map_paths = sorted(self.event_map_paths[1:])
-        self.all_paths = sorted(self.event_map_paths + self.image_paths, key=get_digit)
+            if get_digit(path) not in self.image_idx and (get_digit(path) - get_digit(self.edge_map_paths[-1])) % self.event_step == 0:
+                self.edge_map_paths.append(path)
+        self.edge_map_paths = sorted(self.edge_map_paths[1:])
+        self.all_paths = sorted(self.edge_map_paths + self.image_paths, key=get_digit)
             
         self.all_image_paths = self.image_paths
 
@@ -71,12 +71,12 @@ class LocalRFDataset(Dataset):
         self.event_mask = np.ones(len(self.all_paths))
         idx = 0
         for i, image_path in enumerate(self.all_paths):
-            if test_frame_every > 0 and "events" not in image_path and idx % test_frame_every == 0:
+            if test_frame_every > 0 and "edge" not in image_path and idx % test_frame_every == 0:
                 self.test_paths.append(image_path)
                 self.test_mask.append(1)
             else:
                 self.test_mask.append(0)
-            if "events" not in image_path:
+            if "edge" not in image_path:
                 self.event_mask[i] = 0
                 idx += 1
         self.test_mask = np.array(self.test_mask)
@@ -97,7 +97,7 @@ class LocalRFDataset(Dataset):
         self.all_invdepths = None
         self.all_fwd_flow, self.all_fwd_mask, self.all_bwd_flow, self.all_bwd_mask = None, None, None, None
         self.all_loss_weights = None
-        self.all_events = None
+        self.all_edges = None
 
         self.active_frames_bounds = [0, 0]
         self.event_set = []
@@ -144,7 +144,6 @@ class LocalRFDataset(Dataset):
     def read_meta(self):
         def read_image(i):
             image_path = self.all_paths[i]
-            print(f'load image: {image_path}')
             motion_mask_path = os.path.join(self.root_dir, "masks", 
                 f"{os.path.splitext(os.path.basename(image_path))[0]}.png")
             if not os.path.isfile(motion_mask_path):
@@ -216,28 +215,25 @@ class LocalRFDataset(Dataset):
             }
 
         def read_event(i):
-            tmp_t = i
-            while not self.all_paths[tmp_t].endswith('jpg'):
-                tmp_t -= 1
-            event_path = self.all_paths[i]
-            data = np.load(event_path)
-            img = cv2.imread(self.all_paths[tmp_t])[..., ::-1]
-            img = img.astype(np.float32) / 255
-            if img.ndim == 3:
-                img = img.mean(axis=-1)
-            if self.downsampling != -1:
-                scale = 1 / self.downsampling
-                img = cv2.resize(img, None, 
-                    fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                data = cv2.resize(data, None, 
-                    fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            evdata = img * np.exp(data * 0.2)
-            evdata = np.clip(evdata, 0, 1)
-            return {"events": evdata}
+            image_path = self.all_paths[i]
+            edge_maps = []
+            for i in range(self.events_in_imgs): # add events_in_imgs event frames
+                # tmp_path = os.path.join(self.root_dir, 'edge_maps', f'{(i+1)*self.event_step+left_idx:09d}.png')
+                tmp_path = image_path
+                img = cv2.imread(tmp_path)
+                img = img.astype(np.float32) / 255.
+                if img.ndim == 3:
+                    img = img.mean(axis=-1)
+                if self.downsampling != -1:
+                    scale = 1 / self.downsampling
+                    img = cv2.resize(img, None, 
+                        fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                edge_maps.append(img)
+            return {"edge_maps": np.array(edge_maps) if edge_maps else None}
         
         def read_image_and_event(i):
             image_path = self.all_paths[i]
-            if "events" in image_path:
+            if "edge" in image_path:
                 return read_event(i)
             return read_image(i)
         n_frames_to_load = min(self.active_frames_bounds[-1] - self.loaded_frames, self.num_images - self.loaded_frames)
@@ -254,7 +250,7 @@ class LocalRFDataset(Dataset):
         all_bwd_flow = [data["bwd_flow"] for data in all_data if data and "bwd_flow" in data]
         all_bwd_mask = [data["bwd_mask"] for data in all_data if data and "bwd_mask" in data]
         all_mask = [data["mask"] for data in all_data if data and "mask" in data]
-        all_events = [data["events"] for data in all_data if data and "events" in data]
+        all_edges = [data["edge_maps"] for data in all_data if data and "edge_maps" in data]
 
         all_laplacian = [
                 np.ones_like(img[..., 0]) * cv2.Laplacian(
@@ -264,7 +260,7 @@ class LocalRFDataset(Dataset):
         ]
         all_loss_weights = [laplacian if mask is None else laplacian * mask for laplacian, mask in zip(all_laplacian, all_mask)]
 
-        self.img_wh = list(all_rgbs[0].shape[1::-1]) if all_rgbs else list(all_events[0].shape[1::-1])
+        self.img_wh = list(all_rgbs[0].shape[1::-1]) if all_rgbs else list(all_edges[0].shape[1::-1])
         self.n_px_per_frame = self.img_wh[0] * self.img_wh[1]
         self.H, self.W = 1080, 1920
 
@@ -279,7 +275,7 @@ class LocalRFDataset(Dataset):
                 self.all_bwd_mask = np.stack(all_bwd_mask, 0)
         else:
             self.all_rgbs = concatenate_append(self.all_rgbs, all_rgbs, 3) if all_rgbs else self.all_rgbs
-            self.all_events = concatenate_append(self.all_events, all_events, 1) if all_events else self.all_events
+            self.all_edges = concatenate_append(self.all_edges, all_edges, 1) if all_edges else self.all_edges
             if self.load_depth:
                 self.all_invdepths = concatenate_append(self.all_invdepths, all_invdepths, 1) if all_invdepths else self.all_invdepths
             if self.load_flow:
@@ -355,7 +351,6 @@ class LocalRFDataset(Dataset):
             "idx": idx, # pixel idx
             "view_ids": view_ids, # pose idx
             "train_test_poses": train_test_poses,
-            "mode": "rgb"
         }
 
     def sample_event(self, batch_size, is_refining, optimize_poses, n_views=16):
@@ -365,47 +360,6 @@ class LocalRFDataset(Dataset):
         event_id_map = np.cumsum(self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]) - 1
         event_id_map = event_id_map.astype(np.int64)
         
-        raw_samples = np.random.randint(0, inclusion_mask.sum(), size=(n_views,), dtype=np.int64)
-        # Force having the last views during coarse optimization
-        if not is_refining and inclusion_mask.sum() > 4:
-            raw_samples[:2] = inclusion_mask.sum() - 1
-            raw_samples[2:4] = inclusion_mask.sum() - 2
-            raw_samples[4] = inclusion_mask.sum() - 3
-            raw_samples[5] = inclusion_mask.sum() - 4
-        view_ids = sample_map[raw_samples]
-
-        idx = np.random.randint(0, self.n_px_per_frame, batch_size, dtype=np.int64)
-        idx = idx.reshape(n_views, -1)
-        idx += event_id_map[(view_ids - self.active_frames_bounds[0]).astype(np.int64)][..., None] * self.n_px_per_frame
-        idx = idx.reshape(-1)
-        idx_sample = idx
-
-        return {
-            "events": self.all_events[idx_sample], 
-            "idx": idx, # pixel idx
-            "view_ids": view_ids, # pose idx
-            "mode": "event"
-        }
-    
-    def sample(self, batch_size, is_refining, optimize_poses, n_views=16):
-        event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
-        
-        if event_ratio*0.5 > random.uniform(0, 1):
-            return self.sample_event(batch_size, is_refining, optimize_poses, n_views)
-        else:
-            return self.sample_img(batch_size, is_refining, optimize_poses, n_views)
-    
-
-    def sample_event_patch(self, batch_size, is_refining, optimize_poses, n_views=16):
-
-        # test or train sample mode 
-        inclusion_mask = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]
-
-        sample_map = np.nonzero(inclusion_mask)[0] + self.active_frames_bounds[0]
-
-        event_id_map = np.cumsum(self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]) - 1
-        event_id_map = event_id_map.astype(np.int64)
-
         raw_samples = np.random.randint(0, inclusion_mask.sum(), size=(n_views,), dtype=np.int64)
         view_ids = sample_map[raw_samples]
         patch_size = int((batch_size // n_views)**(1/2))
@@ -420,7 +374,65 @@ class LocalRFDataset(Dataset):
         idx_sample = idx
 
         return {
-            "events": self.all_events[idx_sample], 
+            "edge_maps": self.all_edges[idx_sample], 
             "idx": idx, # pixel idx
             "view_ids": view_ids, # pose idx
+        }
+    
+    def sample(self, batch_size, is_refining, optimize_poses, n_views=16):
+        event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
+        
+        if event_ratio > random.uniform(0, 1):
+            return self.sample_event(batch_size, is_refining, optimize_poses, n_views)
+        else:
+            return self.sample_img(batch_size, is_refining, optimize_poses, n_views)
+    
+    def sample_image_patch(self, batch_size, is_refining, optimize_poses, n_views=16):
+        active_test_mask = self.test_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]
+        test_ratio = active_test_mask.mean()
+        if optimize_poses:
+            train_test_poses = test_ratio > random.uniform(0, 1)
+        else:
+            train_test_poses = False
+
+        # test or train sample mode 
+        inclusion_mask = active_test_mask if train_test_poses else 1 - active_test_mask
+
+        # where can we sample, excluding the event frame
+        can_sample = (1 - self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]> 0 ) & (inclusion_mask > 0)
+
+        # map raw idx to pose idx 
+        sample_map = np.nonzero(can_sample)[0] + self.active_frames_bounds[0]
+        
+        # image raw idx based on number of frame where can sample 
+        raw_samples = np.random.randint(0, can_sample.sum(), n_views, dtype=np.int64)
+
+        # map pose idx to image idx
+        img_id_map = np.cumsum(1 - self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]) - 1
+        img_id_map = img_id_map.astype(np.int64)
+
+        raw_samples = np.random.randint(0, can_sample.sum(), size=(n_views,), dtype=np.int64)
+        view_ids = sample_map[raw_samples]
+        patch_size = int((batch_size // n_views)**(1/2))
+
+        i, j = np.random.randint(0, self.H  - patch_size + 1, size=[n_views,1,1]), np.random.randint(0, self.W  - patch_size + 1, size=[n_views,1,1])
+        di, dj = np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='ij')
+        di, dj = di[None].repeat(n_views, 0), dj[None].repeat(n_views, 0)
+        di, dj = di + i, dj + j
+        idx = dj + di * self.W + img_id_map[(view_ids - self.active_frames_bounds[0]).astype(np.int64)][..., None] * self.n_px_per_frame
+        idx = idx.reshape(-1)
+
+        idx_sample = idx
+
+        return {
+            "rgbs": self.all_rgbs[idx_sample], 
+            "loss_weights": self.all_loss_weights[idx_sample], 
+            "invdepths": self.all_invdepths[idx_sample] if self.load_depth else None,
+            "fwd_flow": self.all_fwd_flow[idx_sample] if self.load_flow else None,
+            "fwd_mask": self.all_fwd_mask[idx_sample] if self.load_flow else None,
+            "bwd_flow": self.all_bwd_flow[idx_sample] if self.load_flow else None,
+            "bwd_mask": self.all_bwd_mask[idx_sample] if self.load_flow else None,
+            "idx": idx, # pixel idx
+            "view_ids": view_ids, # pose idx
+            "train_test_poses": train_test_poses,
         }

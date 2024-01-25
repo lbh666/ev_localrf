@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Copyright (c) 2022 Anpei Chen
 
-import os, logging, datetime
+import os
 import warnings
 import kornia as K
 import cv2
@@ -17,7 +17,7 @@ import time
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append("localTensoRF")
-from dataLoader.ev_localrf_dataset import LocalRFDataset
+from localTensoRF.dataLoader.edge_localrf_dataset import LocalRFDataset
 from local_tensorfs import LocalTensorfs
 from opt import config_parser
 from renderer import render
@@ -254,7 +254,6 @@ def reconstruction(args):
 
     # init log file
     os.makedirs(logfolder, exist_ok=True)
-    logger = logging.getLogger('train')
     writer = SummaryWriter(log_dir=logfolder)
 
     # init parameters
@@ -348,7 +347,6 @@ def reconstruction(args):
     patch_size = int((args.batch_size // args.n_views)**(1/2))
     metrics = {}
     start_time = time.time()
-    total_start_t = time.time()
     while training:
         optimize_poses = args.lr_R_init > 0 or args.lr_t_init > 0
         data_blob = train_dataset.sample(args.batch_size, local_tensorfs.is_refining, optimize_poses, n_views=args.n_views)
@@ -367,7 +365,7 @@ def reconstruction(args):
         )
 
         # loss
-        if data_blob['mode'] == 'rgb': # image mode
+        if "rgbs" in data_blob: # image mode
             rgb_train = torch.from_numpy(data_blob["rgbs"]).to(args.device)
             loss_weights = torch.from_numpy(data_blob["loss_weights"]).to(args.device)
 
@@ -433,8 +431,11 @@ def reconstruction(args):
                 writer.add_scalar("train/loss_tv", loss_tv, global_step=iteration)
                 writer.add_scalar("train/l1_loss", l1_loss, global_step=iteration)
         else:
-            rgb_train = torch.from_numpy(data_blob["events"]).to(args.device)
-            loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
+            rgb_map, depth_map = rgb_map.reshape(args.n_views,patch_size,patch_size,3).mean(dim=-1,keepdim=True).permute(0,3,1,2), \
+                depth_map.reshape(args.n_views,patch_size,patch_size,1)
+            edge_map_event = torch.from_numpy(data_blob["edge_maps"]).to(args.device)
+            edge_map = K.filters.sobel(rgb_map).permute(0,2,3,1).reshape(-1,1)
+            loss =  0. * torch.abs(edge_map - edge_map_event).mean()
             total_loss = loss
 
         # Optimizes
@@ -549,12 +550,7 @@ def reconstruction(args):
             # Get runtime 
             ips = min(args.progress_refresh_rate, iteration + 1) / (time.time() - start_time)
             writer.add_scalar(f"train/iter_per_sec", ips, global_step=iteration)
-            if iteration % 1000 == 0:
-                total_time = time.time() - total_start_t
-                time_sec_avg = total_time / (train_dataset.active_frames_bounds[1] - 0 + 1)
-                eta_sec = time_sec_avg * (train_dataset.num_images - train_dataset.active_frames_bounds[1])
-                eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
-                logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, ETA:{eta_str}")
+            print(f"Iteration {iteration:06d}: {ips:.2f} it/s")
             start_time = time.time()
 
         if (iteration % args.vis_every == args.vis_every - 1):
@@ -663,18 +659,7 @@ if __name__ == "__main__":
     np.random.seed(20211202)
 
     args = config_parser()
-    os.makedirs(args.logdir, exist_ok=True)
-    # set up logging
-    format_str = '%(asctime)s %(levelname)s: %(message)s'
-    logging.basicConfig(format=format_str, level=logging.INFO)
-    logger = logging.getLogger('train')
-    file_handler = logging.FileHandler(args.logdir + '/log.txt', 'w')
-    file_handler.setFormatter(logging.Formatter(format_str))
-    file_handler.setLevel(logging.INFO)
-    logger.addHandler(file_handler)
-    
-    msg = ['get configs'] + [f'{k} : {v} ' for k, v in args._get_kwargs()]
-    logger.info('\n'.join(msg) + '\n\n')
+    print(args)
 
     if args.render_only:
         render_test(args)
