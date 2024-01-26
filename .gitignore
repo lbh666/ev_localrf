@@ -153,3 +153,6 @@ events.*
 debug.py
 *.png
 **_output**
+run.sh
+task.yaml
+
