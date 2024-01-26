@@ -152,3 +152,4 @@ debug_output*
 events.*
 debug.py
 *.png
+**_output**
