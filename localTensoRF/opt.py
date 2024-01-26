@@ -13,9 +13,6 @@ def config_parser(cmd=None):
         "--datadir", type=str, default="./data/llff/fern", help="input data directory"
     )
     parser.add_argument(
-        "--eventdir", type=str, default=r"E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events", help="input data directory"
-    )
-    parser.add_argument(
         "--progress_refresh_rate",
         type=int,
         default=200,
@@ -207,6 +204,12 @@ def config_parser(cmd=None):
     parser.add_argument("--s3im_repeat_time", type=int, default=10)
     parser.add_argument("--s3im_patch_height", type=int, default=64)
     parser.add_argument("--s3im_patch_width", type=int, default=64)
+
+    # event options
+    parser.add_argument("--events_in_imgs", type=int, default=2)
+    parser.add_argument(
+        "--eventdir", type=str, default=r"E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events", help="input data directory"
+    )
 
     if cmd is not None:
         return parser.parse_args(cmd)
