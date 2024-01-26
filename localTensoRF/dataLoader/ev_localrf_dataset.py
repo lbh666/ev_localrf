@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Copyright (c) 2022 Anpei Chen
 
-import os
+import os, logging
 import random
 
 import numpy as np
@@ -64,6 +64,9 @@ class LocalRFDataset(Dataset):
                 self.event_map_paths.append(path)
         self.event_map_paths = sorted(self.event_map_paths[1:])
         self.all_paths = sorted(self.event_map_paths + self.image_paths, key=get_digit)
+        logger = logging.getLogger('train')
+        n_events = len([x for x in self.all_paths if "events" in x])
+        logger.info(f"Init Dataset split:{split}, total {len(self.all_paths)} samples, {n_events} events, {len(self.all_paths) - n_events} images")
             
         self.all_image_paths = self.image_paths
 
