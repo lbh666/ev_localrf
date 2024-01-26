@@ -24,6 +24,7 @@ class S3IM(torch.nn.Module):
         self.patch_width = patch_width
         self.ssim_loss = SSIM(window_size=self.kernel_size, stride=self.stride)
     def forward(self, src_vec, tar_vec):
+        _, C = src_vec.shape
         loss = 0.0
         index_list = []
         for i in range(self.repeat_time):
@@ -36,8 +37,8 @@ class S3IM(torch.nn.Module):
         res_index = torch.cat(index_list)
         tar_all = tar_vec[res_index]
         src_all = src_vec[res_index]
-        tar_patch = tar_all.permute(1, 0).reshape(1, 3, self.patch_height, self.patch_width * self.repeat_time)
-        src_patch = src_all.permute(1, 0).reshape(1, 3, self.patch_height, self.patch_width * self.repeat_time)
+        tar_patch = tar_all.permute(1, 0).reshape(1, C, self.patch_height, self.patch_width * self.repeat_time)
+        src_patch = src_all.permute(1, 0).reshape(1, C, self.patch_height, self.patch_width * self.repeat_time)
         loss = (1 - self.ssim_loss(src_patch, tar_patch))
         return loss
 

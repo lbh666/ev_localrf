@@ -176,16 +176,6 @@ def render(
             cv2.imwrite(f"{savePath}/depth_maps/{fbase}.{img_format}", depth_map_vis.numpy()[..., ::-1])
             if save_raw_depth:
                 cv2.imwrite(f"{savePath}/depth_maps/{fbase}.tiff", depth_map.cpu().numpy())
-    if test: # log the metric
-        psnr = []
-        ssim = []
-        logger = logging.getLogger('train')
-        for fbase in metrics.values():
-            psnr.append(-10 * math.log10(fbase['mse']))
-            ssim.append(fbase['ssim'])
-        psnr = np.array(psnr).mean()
-        ssim = np.array(ssim).mean()
-        logger.info(f"Test ({len(metrics.keys())}/{len(test_dataset.all_fbases)}) data, PSNR: {psnr:.4f}, SSIM:{ssim:.4f}")
 
     if save_video and savePath is not None:
         os.makedirs(savePath, exist_ok=True)
@@ -196,5 +186,16 @@ def render(
             imageio.mimwrite(f, np.stack(poses_vis), fps=30, quality=6, format="mp4", output_params=["-f", "mp4"])
         with open(f"{savePath}/depthvideo.mp4", "wb") as f:
             imageio.mimwrite(f, np.stack(depth_maps_tb), fps=30, quality=6, format="mp4", output_params=["-f", "mp4"])
+    
+    if test: # log the metric
+        psnr = []
+        ssim = []
+        logger = logging.getLogger('train')
+        for fbase in metrics.values():
+            psnr.append(-10 * math.log10(fbase['mse']))
+            ssim.append(fbase['ssim'])
+        psnr = np.array(psnr).mean()
+        ssim = np.array(ssim).mean()
+        logger.info(f"Test ({len(metrics.keys())}/{len(test_dataset.all_fbases)}) data, PSNR: {psnr:.4f}, SSIM:{ssim:.4f}")
 
     return rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_cmp_tb, metrics

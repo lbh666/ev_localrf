@@ -93,7 +93,7 @@ def get_bbox(center, aabb):
     '''
     N, _ = center.shape
     x_, y_, z_ = aabb[0,:,0], aabb[0,:,1], aabb[0,:,2]
-    vertices = torch.stack(torch.meshgrid(x_, y_, z_), dim=-1).reshape(-1,3)[None] # (1, 8, 3)
+    vertices = torch.stack(torch.meshgrid(x_, y_, z_), dim=-1).reshape(-1,3)[None].repeat(N, 1, 1) # (N, 8, 3)
     vertices += center.reshape(N, 1, 3) # (N, 8, 3)
     vertices[..., 1:] *= -1 # Axis flip
     wireframe = vertices[:, [0, 1, 3, 2, 0, 4, 5, 1, 3, 7, 6, 4, 5, 7, 6, 2]]

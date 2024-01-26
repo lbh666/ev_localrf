@@ -41,7 +41,7 @@ class LocalRFDataset(Dataset):
         subsequence=[0, -1],
         test_frame_every=10,
         frame_step=1,
-        events_in_imgs = 2,
+        events_in_imgs = 1,
         eventdir= None
     ):
         self.root_dir = datadir

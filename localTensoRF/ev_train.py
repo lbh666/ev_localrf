@@ -444,10 +444,10 @@ def reconstruction(args):
         else:
             rgb_train = torch.from_numpy(data_blob["events"]).to(args.device)
             loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
+            total_loss = loss
             if args.s3im_weight > 0:
                 s3im_pp = args.s3im_weight * s3im_func(rgb_map.mean(dim=-1, keepdim=True), rgb_train)
                 total_loss += s3im_pp
-            total_loss = loss
 
         # Optimizes
         if train_test_poses:
