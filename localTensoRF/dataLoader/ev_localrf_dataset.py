@@ -133,7 +133,7 @@ class LocalRFDataset(Dataset):
 
 
         self.all_rgbs = self.all_rgbs[n_frames * self.n_px_per_frame:] 
-        self.all_events = self.all_rgbs[n_events * self.n_px_per_frame:] 
+        self.all_events = self.all_events[n_events * self.n_px_per_frame:] 
         if self.load_depth:
             self.all_invdepths = self.all_invdepths[n_frames * self.n_px_per_frame:]
         if self.load_flow:
@@ -141,7 +141,7 @@ class LocalRFDataset(Dataset):
             self.all_fwd_mask = self.all_fwd_mask[n_frames * self.n_px_per_frame:]
             self.all_bwd_flow = self.all_bwd_flow[n_frames * self.n_px_per_frame:]
             self.all_bwd_mask = self.all_bwd_mask[n_frames * self.n_px_per_frame:]
-            self.all_edges = self.all_bwd_mask[n_events * self.n_px_per_frame:]
+            self.all_edges = self.all_edges[n_events * self.n_px_per_frame:]
         self.all_loss_weights = self.all_loss_weights[n_frames * self.n_px_per_frame:]
 
 
@@ -180,14 +180,14 @@ class LocalRFDataset(Dataset):
                     fwd_flow_path = self.all_image_paths[0]
                 if self.frame_step != 1:
                     fwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"fwd_step{self.frame_step}_{os.path.splitext(fwd_flow_path)[0]}.png")
+                        f"fwd_step{self.frame_step}_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                     bwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"bwd_step{self.frame_step}_{os.path.splitext(self.image_paths[i])[0]}.png")
+                        f"bwd_step{self.frame_step}_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                 else:
                     fwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"fwd_{os.path.splitext(fwd_flow_path)[0]}.png")
+                        f"fwd_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                     bwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"bwd_{os.path.splitext(self.image_paths[i])[0]}.png")
+                        f"bwd_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                 encoded_fwd_flow = cv2.imread(fwd_flow_path, cv2.IMREAD_UNCHANGED)
                 encoded_bwd_flow = cv2.imread(bwd_flow_path, cv2.IMREAD_UNCHANGED)
                 flow_scale = img.shape[0] / encoded_fwd_flow.shape[0] 

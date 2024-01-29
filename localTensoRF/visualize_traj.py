@@ -9,7 +9,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 
 # load the data first
-x = torch.load(r"C:\Users\Administrator\Desktop\logs\events_2fps_200dd_output\checkpoints_tmp.th", map_location='cuda')
+x = torch.load(r"E:\code\ev_localrf\checkpoints.th", map_location='cuda')
 num_imgs, num_rfs = x['state_dict']['blending_weights'].shape
 poses = []
 idx = 0

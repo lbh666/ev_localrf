@@ -199,3 +199,118 @@ def render(
         logger.info(f"Test ({len(metrics.keys())}/{len(test_dataset.all_fbases)}) data, PSNR: {psnr:.4f}, SSIM:{ssim:.4f}")
 
     return rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_cmp_tb, metrics
+
+@torch.no_grad()
+def render_posed(
+    test_dataset,
+    poses_mtx,
+    local_tensorfs,
+    args,
+    W, H,
+    frame_indices=None,
+    savePath=None,
+    save_video=False, # Set False to save RAM
+    save_frames=False,
+    train_dataset=None,
+    world2rf=None,
+    img_format="jpg",
+    annotate=False,
+    save_raw_depth=False,
+    start=0,
+    floater_thresh=0,
+    add_frame_to_list=True, # Set False to save RAM. Set True for Tensorboard.
+):
+    rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, poses_vis = [], [], [], []
+    fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_cmp_tb = [], [], []
+
+    if test:
+        idxs = [train_dataset.all_fbases[fbase] for fbase in test_dataset.all_fbases]
+        idxs = [idx for idx in idxs if start <= idx < poses_mtx.shape[0]]
+    else:
+        poses_mtx = poses_mtx[start:]
+        idxs = list(range(start, poses_mtx.shape[0]))
+        is_test_id = [fbase in test_dataset.all_fbases for fbase in train_dataset.all_fbases]
+        if frame_indices is None:
+            frame_indices = []
+            for pose in poses_mtx:
+                t_c2w = torch.stack(list(local_tensorfs.t_c2w), dim=0)
+                distances_to_poses = torch.norm(t_c2w - pose[None, :, 3], dim=-1)
+                frame_indices.append(torch.argmin(distances_to_poses).item())
+            frame_indices = torch.Tensor(frame_indices).to(poses_mtx).long()
+
+    N_rays_all = W * H
+    rays_ids = torch.arange(N_rays_all, dtype=torch.long, device=poses_mtx.device)
+    metrics = {}
+    print(f"Render {len(idxs)} frame with size {W} x {H}")
+    for i, idx in tqdm(enumerate(idxs)):
+        torch.cuda.empty_cache()
+        if frame_indices is None:
+            view_ids = torch.Tensor([idx]).to(poses_mtx).long()
+        else:
+            view_ids = frame_indices[idx][None]
+
+        rgb_map, depth_map, directions, ij = local_tensorfs(
+            rays_ids,
+            view_ids,
+            W,
+            H,
+            is_train=False,
+            cam2world=None if test else poses_mtx[i][None],
+            world2rf=world2rf,
+            blending_weights=None,
+            test_id=test or is_test_id[view_ids.item()],
+            chunk=args.batch_size,
+            floater_thresh=floater_thresh,
+        )              
+
+        # RGB and depth visualization
+        rgb_map, depth_map = rgb_map.reshape(H, W, 3), depth_map.reshape(H, W)
+        depth_map_vis, _ = visualize_depth(depth_map.cpu().numpy(), [0, 5])
+
+        rgb_map = rgb_map.detach().cpu()
+        if annotate:
+            rgb_map = (rgb_map.detach().cpu() * 255).byte().numpy()
+            weights = local_tensorfs.module.blending_weights[idx].cpu()
+            rf_ids = torch.nonzero(weights)[:, 0]
+            weights = [round(weight.item(), 1) for weight in weights[rf_ids]]
+            cv2.putText(rgb_map, f"id: {idx}", [1, H-70], 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(rgb_map, f"RFs: {rf_ids.tolist()}", [1, H-40], 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(rgb_map, f"W: {weights}", [1, H-10], 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            rgb_map = torch.Tensor(rgb_map) / 255
+
+        all_poses = torch.cat([poses_mtx, poses_mtx[idx][None]], dim=0)
+        colours = ["C1"] * poses_mtx.shape[0] + ["C2"]
+        pose_vis = draw_poses(all_poses.cpu(), colours)
+        pose_vis = cv2.resize(pose_vis, (int(pose_vis.shape[1] * rgb_map.shape[0] / pose_vis.shape[0]), rgb_map.shape[0]))
+        depth_map_vis = torch.permute(depth_map_vis.detach().cpu() * 255, [1, 2, 0]).byte()
+        if add_frame_to_list or (save_video and savePath is not None):
+            rgb_maps_tb.append(rgb_map)  # HWC
+            depth_maps_tb.append(depth_map_vis)  # HWC
+            poses_vis.append(pose_vis)
+
+
+        if save_frames and savePath is not None:
+            fbase = f"{i:06d}"
+            os.makedirs(f"{savePath}/rgb_maps", exist_ok=True)
+            os.makedirs(f"{savePath}/depth_maps", exist_ok=True)
+            cv2.imwrite(f"{savePath}/rgb_maps/{fbase}.{img_format}", 255 * rgb_map.numpy()[..., ::-1])
+            cv2.imwrite(f"{savePath}/rgb_maps/{fbase}_pose.{img_format}", pose_vis[..., ::-1])
+            cv2.imwrite(f"{savePath}/depth_maps/{fbase}.{img_format}", depth_map_vis.numpy()[..., ::-1])
+            if save_raw_depth:
+                cv2.imwrite(f"{savePath}/depth_maps/{fbase}.tiff", depth_map.cpu().numpy())
+
+    if save_video and savePath is not None:
+        os.makedirs(savePath, exist_ok=True)
+
+        with open(f"{savePath}/video.mp4", "wb") as f:
+            imageio.mimwrite(f, np.stack(rgb_maps_tb), fps=30, quality=6, format="mp4", output_params=["-f", "mp4"])
+        with open(f"{savePath}/posevideo.mp4", "wb") as f:
+            imageio.mimwrite(f, np.stack(poses_vis), fps=30, quality=6, format="mp4", output_params=["-f", "mp4"])
+        with open(f"{savePath}/depthvideo.mp4", "wb") as f:
+            imageio.mimwrite(f, np.stack(depth_maps_tb), fps=30, quality=6, format="mp4", output_params=["-f", "mp4"])
+    
+
+    return rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_cmp_tb, metrics

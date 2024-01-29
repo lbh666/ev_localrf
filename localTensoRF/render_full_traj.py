@@ -82,7 +82,7 @@ def render_frames(
             save_frames=True,
             save_video=False,
             add_frame_to_list=False,
-            test=True,
+            test=False,
             train_dataset=train_dataset,
             img_format="png",
             start=0
@@ -114,14 +114,6 @@ def render_frames(
         c2ws = torch.tensor(c2ws).to(args.device)
         c2ws = c2ws[..., :3, :]
 
-        if args.with_preprocessed_poses:
-            raw2ours = torch.inverse(torch.from_numpy(train_dataset.first_pose)).to(c2ws)
-            for c2w in c2ws:
-               c2w[:3, :3] = raw2ours[:3, :3] @ c2w[:3, :3]
-               c2w[:3, 3] = raw2ours[:3, :3] @ c2w[:3, 3]
-               c2w[:3, 3] = raw2ours[:3, 3] + c2w[:3, 3]
-            c2ws[:, :3, 3] *= train_dataset.pose_scale
-
         save_path = f"{logfolder}/{os.path.splitext(os.path.basename(args.render_from_file))[0]}"
         os.makedirs(save_path, exist_ok=True)
         render(
@@ -140,7 +132,7 @@ def render_frames(
         )
 
 @torch.no_grad()
-def render_test(args):
+def render_full_traj(args):
     # init dataset
     train_dataset = LocalRFDataset(
         f"{args.datadir}",
@@ -403,14 +395,17 @@ def reconstruction(args):
                     raise NotImplementedError
                 starting_frame_id = max(train_dataset.active_frames_bounds[0] - 1, 0)
                 cam2world = local_tensorfs.get_cam2world(starting_id=starting_frame_id)
+                image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                cam2world = cam2world[image_mask]
+                sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
                 directions = directions.view(view_ids.shape[0], -1, 3)
                 ij = ij.view(view_ids.shape[0], -1, 2)
                 fwd_flow = torch.from_numpy(data_blob["fwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
                 fwd_mask = torch.from_numpy(data_blob["fwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
-                fwd_mask[view_ids == len(cam2world) - 1] = 0
+                fwd_mask[view_ids == np.nonzero(image_mask)[0][-1]] = 0
                 bwd_flow = torch.from_numpy(data_blob["bwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
                 bwd_mask = torch.from_numpy(data_blob["bwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
-                fwd_cam2cams, bwd_cam2cams = get_fwd_bwd_cam2cams(cam2world, view_ids - starting_frame_id)
+                fwd_cam2cams, bwd_cam2cams = get_fwd_bwd_cam2cams(cam2world, sample_map[view_ids - starting_frame_id])
                         
                 pts = directions * depth_map[..., None]
                 pred_fwd_flow = get_pred_flow(
@@ -505,6 +500,7 @@ def reconstruction(args):
                 training_frames = (local_tensorfs.blending_weights[:, -1] > 0)
                 train_dataset.deactivate_frames(
                     np.argmax(training_frames.cpu().numpy(), axis=0))
+                logger.info(f'current sliding windows (after deactivate): [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
             else:
                 training = False
         ## Log
@@ -703,6 +699,6 @@ if __name__ == "__main__":
     logger.info('\n'.join(msg) + '\n\n')
 
     if args.render_only:
-        render_test(args)
+        render_full_traj(args)
     else:
         reconstruction(args)

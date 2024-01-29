@@ -28,7 +28,7 @@ from utils.utils import (N_to_reso, TVLoss, draw_poses, get_pred_flow,
 
 def save_transforms(poses_mtx, transform_path, local_tensorfs, train_dataset=None):
     if train_dataset is not None:
-        fnames = train_dataset.all_image_paths
+        fnames = train_dataset.all_paths
     else:
         fnames = [f"{i:06d}.jpg" for i in range(len(poses_mtx))]
 
@@ -356,14 +356,22 @@ def reconstruction(args):
     metrics = {}
     start_time = time.time()
     total_start_t = time.time()
+    time_dataload = 0
+    time_forward = 0
+    time_optim = 0
+    
+    sample_map = None
     while training:
         optimize_poses = args.lr_R_init > 0 or args.lr_t_init > 0
+        t_tmp = time.time()
         data_blob = train_dataset.sample(args.batch_size, local_tensorfs.is_refining, optimize_poses, n_views=args.n_views)
+        time_dataload += time.time() - t_tmp
         train_test_poses = data_blob["train_test_poses"] if "train_test_poses" in data_blob else False
         view_ids = torch.from_numpy(data_blob["view_ids"]).to(args.device)
         ray_idx = torch.from_numpy(data_blob["idx"]).to(args.device)
         reg_loss_weight = local_tensorfs.lr_factor ** (local_tensorfs.rf_iter[-1])
 
+        t_tmp = time.time()
         rgb_map, depth_map, directions, ij = local_tensorfs(
             ray_idx,
             view_ids,
@@ -372,6 +380,7 @@ def reconstruction(args):
             is_train=True,
             test_id=train_test_poses,
         )
+        time_forward += time.time() - t_tmp
 
         # loss
         if data_blob['mode'] == 'rgb': # image mode
@@ -403,14 +412,19 @@ def reconstruction(args):
                     raise NotImplementedError
                 starting_frame_id = max(train_dataset.active_frames_bounds[0] - 1, 0)
                 cam2world = local_tensorfs.get_cam2world(starting_id=starting_frame_id)
+                if sample_map == None:
+                    image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                    sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
+                    last_img_idx = np.nonzero(image_mask)[0][-1]
+                cam2world = cam2world[image_mask]
                 directions = directions.view(view_ids.shape[0], -1, 3)
                 ij = ij.view(view_ids.shape[0], -1, 2)
                 fwd_flow = torch.from_numpy(data_blob["fwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
                 fwd_mask = torch.from_numpy(data_blob["fwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
-                fwd_mask[view_ids == len(cam2world) - 1] = 0
+                fwd_mask[view_ids == last_img_idx] = 0
                 bwd_flow = torch.from_numpy(data_blob["bwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
                 bwd_mask = torch.from_numpy(data_blob["bwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
-                fwd_cam2cams, bwd_cam2cams = get_fwd_bwd_cam2cams(cam2world, view_ids - starting_frame_id)
+                fwd_cam2cams, bwd_cam2cams = get_fwd_bwd_cam2cams(cam2world, sample_map[view_ids - starting_frame_id])
                         
                 pts = directions * depth_map[..., None]
                 pred_fwd_flow = get_pred_flow(
@@ -452,6 +466,7 @@ def reconstruction(args):
                 total_loss += s3im_pp
 
         # Optimizes
+        t_tmp = time.time()
         if train_test_poses:
             can_add_rf = False
             if optimize_poses:
@@ -459,6 +474,7 @@ def reconstruction(args):
         else:
             can_add_rf = local_tensorfs.optimizer_step(total_loss, optimize_poses)
             training |= train_dataset.active_frames_bounds[1] != train_dataset.num_images
+        time_optim += time.time() - t_tmp
 
         ## Progressive optimization
         if not local_tensorfs.is_refining:
@@ -481,6 +497,9 @@ def reconstruction(args):
                 train_dataset.activate_frames()
                 n_added_frames += 1
                 last_add_iter = iteration
+                image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
+                last_img_idx = np.nonzero(image_mask)[0][-1]
 
         # Add new RF
         if can_add_rf:
@@ -505,6 +524,10 @@ def reconstruction(args):
                 training_frames = (local_tensorfs.blending_weights[:, -1] > 0)
                 train_dataset.deactivate_frames(
                     np.argmax(training_frames.cpu().numpy(), axis=0))
+                image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
+                last_img_idx = np.nonzero(image_mask)[0][-1]
+                logger.info(f'current sliding windows (after deactivate): [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
             else:
                 training = False
         ## Log
@@ -580,7 +603,9 @@ def reconstruction(args):
                 time_sec_avg = total_time / (train_dataset.active_frames_bounds[1] - 0 + 1)
                 eta_sec = time_sec_avg * (train_dataset.num_images - train_dataset.active_frames_bounds[1])
                 eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
-                logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, ETA:{eta_str}")
+                logger.info(f'''Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f}, \
+                        forward: {time_forward/1000:.3f}, optim: {time_optim/1000:.3f}], ETA:{eta_str}''')
+                time_dataload, time_forward, time_optim = 0, 0, 0
             start_time = time.time()
 
         if (iteration % args.vis_every == 0):

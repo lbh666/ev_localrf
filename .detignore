@@ -140,3 +140,4 @@ results
 *.zip
 lego_cat
 weights
+checkpoints*
