@@ -603,8 +603,8 @@ def reconstruction(args):
                 time_sec_avg = total_time / (train_dataset.active_frames_bounds[1] - 0 + 1)
                 eta_sec = time_sec_avg * (train_dataset.num_images - train_dataset.active_frames_bounds[1])
                 eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
-                logger.info(f'''Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f}, \
-                        forward: {time_forward/1000:.3f}, optim: {time_optim/1000:.3f}], ETA:{eta_str}''')
+                logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f} s," + \
+                        f" forward: {time_forward/1000:.3f} s, optim: {time_optim/1000:.3f} s], ETA:{eta_str}")
                 time_dataload, time_forward, time_optim = 0, 0, 0
             start_time = time.time()
 
