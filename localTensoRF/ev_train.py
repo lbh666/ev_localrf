@@ -497,9 +497,10 @@ def reconstruction(args):
                 train_dataset.activate_frames()
                 n_added_frames += 1
                 last_add_iter = iteration
-                image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
-                sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
-                last_img_idx = np.nonzero(image_mask)[0][-1]
+                if args.loss_flow_weight_inital > 0:
+                    image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                    sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
+                    last_img_idx = np.nonzero(image_mask)[0][-1]
 
         # Add new RF
         if can_add_rf:
@@ -524,9 +525,10 @@ def reconstruction(args):
                 training_frames = (local_tensorfs.blending_weights[:, -1] > 0)
                 train_dataset.deactivate_frames(
                     np.argmax(training_frames.cpu().numpy(), axis=0))
-                image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
-                sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
-                last_img_idx = np.nonzero(image_mask)[0][-1]
+                if args.loss_flow_weight_inital > 0:
+                    image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
+                    sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
+                    last_img_idx = np.nonzero(image_mask)[0][-1]
                 logger.info(f'current sliding windows (after deactivate): [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
             else:
                 training = False
