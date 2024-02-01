@@ -206,7 +206,7 @@ class LocalTensorfs(torch.nn.Module):
             self.n_iters_reg = int(self.n_iters_reg_per_frame * n_training_frames)
             self.lr_factor = self.lr_decay_target_ratio ** (1 / self.n_iters)
             self.N_voxel_list = {int(key * n_training_frames): self.N_voxel_per_frame_list[key] for key in self.N_voxel_per_frame_list}
-            self.iter_pose = int(max(self.N_voxel_list.keys()) + 100 * n_training_frames)
+            self.iter_pose = max(self.N_voxel_list.keys())
             self.lr_factor_RT = self.lr_decay_target_ratio ** (1 / self.iter_pose)
             self.update_AlphaMask_list = [int(update_AlphaMask * n_training_frames) for update_AlphaMask in self.update_AlphaMask_per_frame_list]
 
@@ -276,6 +276,8 @@ class LocalTensorfs(torch.nn.Module):
                 if optimize_poses and self.rf_iter[-1] < self.iter_pose:
                     self.r_optimizers[idx].step()
                     self.t_optimizers[idx].step()
+                elif optimize_poses and self.rf_iter[-1] > self.iter_pose:
+                    print("refine Phase 2: only optimize RFs")
                 # Optimize exposures
                 if self.lr_exposure_init > 0:
                     self.exp_optimizers[idx].step()

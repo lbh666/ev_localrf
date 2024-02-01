@@ -14,11 +14,12 @@ from torch.utils.data import Dataset
 from utils.utils import decode_flow
 import json
 
-def concatenate_append(old, new, dim):
-    new = np.concatenate(new, 0).reshape(-1, dim)
+def concatenate_append(old, new):
+    # new = np.concatenate(new, 0).reshape(-1, dim)
     if old is not None:
-        new = np.concatenate([old, new], 0)
-
+        new = np.concatenate([old, *new], 0)
+    else:
+        new = np.concatenate(new, 0)
     return new
 
 def get_digit(path):
@@ -132,17 +133,17 @@ class LocalRFDataset(Dataset):
         self.active_frames_bounds[0] = first_frame
 
 
-        self.all_rgbs = self.all_rgbs[n_frames * self.n_px_per_frame:] 
-        self.all_events = self.all_events[n_events * self.n_px_per_frame:] 
+        self.all_rgbs = self.all_rgbs[n_frames:] 
+        self.all_events = self.all_events[n_events:] 
         if self.load_depth:
-            self.all_invdepths = self.all_invdepths[n_frames * self.n_px_per_frame:]
+            self.all_invdepths = self.all_invdepths[n_frames:]
         if self.load_flow:
-            self.all_fwd_flow = self.all_fwd_flow[n_frames * self.n_px_per_frame:]
-            self.all_fwd_mask = self.all_fwd_mask[n_frames * self.n_px_per_frame:]
-            self.all_bwd_flow = self.all_bwd_flow[n_frames * self.n_px_per_frame:]
-            self.all_bwd_mask = self.all_bwd_mask[n_frames * self.n_px_per_frame:]
-            self.all_edges = self.all_edges[n_events * self.n_px_per_frame:]
-        self.all_loss_weights = self.all_loss_weights[n_frames * self.n_px_per_frame:]
+            self.all_fwd_flow = self.all_fwd_flow[n_frames:]
+            self.all_fwd_mask = self.all_fwd_mask[n_frames:]
+            self.all_bwd_flow = self.all_bwd_flow[n_frames:]
+            self.all_bwd_mask = self.all_bwd_mask[n_frames:]
+            # self.all_edges = self.all_edges[n_events * self.n_px_per_frame:]
+        self.all_loss_weights = self.all_loss_weights[n_frames:]
 
 
 
@@ -173,19 +174,19 @@ class LocalRFDataset(Dataset):
                 invdepth = None
 
             if self.load_flow:
-                glob_idx = self.all_image_paths.index(self.image_paths[i])
+                glob_idx = self.all_image_paths.index(self.all_paths[i])
                 if glob_idx+1 < len(self.all_image_paths):
                     fwd_flow_path = self.all_image_paths[glob_idx+1]
                 else:
                     fwd_flow_path = self.all_image_paths[0]
                 if self.frame_step != 1:
                     fwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"fwd_step{self.frame_step}_{os.path.splitext(os.path.basename(image_path))[0]}.png")
+                        f"fwd_step{self.frame_step}_{os.path.splitext(os.path.basename(fwd_flow_path))[0]}.png")
                     bwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
                         f"bwd_step{self.frame_step}_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                 else:
                     fwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
-                        f"fwd_{os.path.splitext(os.path.basename(image_path))[0]}.png")
+                        f"fwd_{os.path.splitext(os.path.basename(fwd_flow_path))[0]}.png")
                     bwd_flow_path = os.path.join(self.root_dir, "flow_ds", 
                         f"bwd_{os.path.splitext(os.path.basename(image_path))[0]}.png")
                 encoded_fwd_flow = cv2.imread(fwd_flow_path, cv2.IMREAD_UNCHANGED)
@@ -211,13 +212,13 @@ class LocalRFDataset(Dataset):
                 mask = None
 
             return {
-                "img": img, 
-                "invdepth": invdepth,
-                "fwd_flow": fwd_flow,
-                "fwd_mask": fwd_mask,
-                "bwd_flow": bwd_flow,
-                "bwd_mask": bwd_mask,
-                "mask": mask,
+                "img": img[np.newaxis], 
+                "invdepth": invdepth[np.newaxis] if invdepth is not None else None,
+                "fwd_flow": fwd_flow[np.newaxis] if fwd_flow is not None else None,
+                "fwd_mask": fwd_mask[np.newaxis] if fwd_mask is not None else None,
+                "bwd_flow": bwd_flow[np.newaxis] if bwd_flow is not None else None,
+                "bwd_mask": bwd_mask[np.newaxis] if bwd_mask is not None else None,
+                "mask": mask[np.newaxis] if mask else None,
             }
 
         def read_event(i):
@@ -238,7 +239,7 @@ class LocalRFDataset(Dataset):
                     fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             evdata = img * np.exp(data * 0.2)
             evdata = np.clip(evdata, 0, 1)
-            return {"events": evdata}
+            return {"events": evdata[np.newaxis, ..., np.newaxis]}
         
         def read_image_and_event(i):
             image_path = self.all_paths[i]
@@ -262,37 +263,37 @@ class LocalRFDataset(Dataset):
         all_events = [data["events"] for data in all_data if data and "events" in data]
 
         all_laplacian = [
-                np.ones_like(img[..., 0]) * cv2.Laplacian(
-                            cv2.cvtColor((img*255).astype(np.uint8), cv2.COLOR_RGB2GRAY), cv2.CV_32F
+                np.ones_like(img[0][..., 0]) * cv2.Laplacian(
+                            cv2.cvtColor((img[0]*255).astype(np.uint8), cv2.COLOR_RGB2GRAY), cv2.CV_32F
                         ).var()
             for img in all_rgbs
         ]
         all_loss_weights = [laplacian if mask is None else laplacian * mask for laplacian, mask in zip(all_laplacian, all_mask)]
 
-        self.img_wh = list(all_rgbs[0].shape[1::-1]) if all_rgbs else list(all_events[0].shape[1::-1])
+        self.img_wh = list(all_rgbs[0].shape[2:0:-1]) if all_rgbs else list(all_events[0].shape[1:3][::-1])
         self.n_px_per_frame = self.img_wh[0] * self.img_wh[1]
         self.H, self.W = 1080, 1920
 
         if self.split != "train":
-            self.all_rgbs = np.stack(all_rgbs, 0)
+            self.all_rgbs = np.concatenate(all_rgbs, 0)
             if self.load_depth:
-                self.all_invdepths = np.stack(all_invdepths, 0)
+                self.all_invdepths = np.concatenate(all_invdepths, 0)
             if self.load_flow:
-                self.all_fwd_flow = np.stack(all_fwd_flow, 0)
-                self.all_fwd_mask = np.stack(all_fwd_mask, 0)
-                self.all_bwd_flow = np.stack(all_bwd_flow, 0)
-                self.all_bwd_mask = np.stack(all_bwd_mask, 0)
+                self.all_fwd_flow = np.concatenate(all_fwd_flow, 0)
+                self.all_fwd_mask = np.concatenate(all_fwd_mask, 0)
+                self.all_bwd_flow = np.concatenate(all_bwd_flow, 0)
+                self.all_bwd_mask = np.concatenate(all_bwd_mask, 0)
         else:
-            self.all_rgbs = concatenate_append(self.all_rgbs, all_rgbs, 3) if all_rgbs else self.all_rgbs
-            self.all_events = concatenate_append(self.all_events, all_events, 1) if all_events else self.all_events
+            self.all_rgbs = concatenate_append(self.all_rgbs, all_rgbs) if all_rgbs else self.all_rgbs
+            self.all_events = concatenate_append(self.all_events, all_events) if all_events else self.all_events
             if self.load_depth:
-                self.all_invdepths = concatenate_append(self.all_invdepths, all_invdepths, 1) if all_invdepths else self.all_invdepths
+                self.all_invdepths = concatenate_append(self.all_invdepths, all_invdepths) if all_invdepths else self.all_invdepths
             if self.load_flow:
-                self.all_fwd_flow = concatenate_append(self.all_fwd_flow, all_fwd_flow, 2)
-                self.all_fwd_mask = concatenate_append(self.all_fwd_mask, all_fwd_mask, 1)
-                self.all_bwd_flow = concatenate_append(self.all_bwd_flow, all_bwd_flow, 2)
-                self.all_bwd_mask = concatenate_append(self.all_bwd_mask, all_bwd_mask, 1)
-            self.all_loss_weights = concatenate_append(self.all_loss_weights, all_loss_weights, 1) if all_loss_weights else self.all_loss_weights
+                self.all_fwd_flow = concatenate_append(self.all_fwd_flow, all_fwd_flow)
+                self.all_fwd_mask = concatenate_append(self.all_fwd_mask, all_fwd_mask)
+                self.all_bwd_flow = concatenate_append(self.all_bwd_flow, all_bwd_flow)
+                self.all_bwd_mask = concatenate_append(self.all_bwd_mask, all_bwd_mask)
+            self.all_loss_weights = concatenate_append(self.all_loss_weights, all_loss_weights) if all_loss_weights else self.all_loss_weights
 
 
     def __len__(self):
@@ -306,8 +307,8 @@ class LocalRFDataset(Dataset):
 
     def get_frame_fbase(self, view_id):
         return list(self.all_fbases.keys())[view_id]
-
-    def sample_img(self, batch_size, is_refining, optimize_poses, n_views=16):
+    
+    def get_can_sample_img(self, optimize_poses):
         active_test_mask = self.test_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]
         test_ratio = active_test_mask.mean()
         if optimize_poses:
@@ -320,6 +321,11 @@ class LocalRFDataset(Dataset):
 
         # where can we sample, excluding the event frame
         can_sample = (1 - self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]> 0 ) & (inclusion_mask > 0)
+
+        return can_sample, train_test_poses
+
+    def sample_img(self, batch_size, is_refining, optimize_poses, n_views=16):
+        can_sample, train_test_poses = self.get_can_sample_img(optimize_poses)
 
         # map raw idx to pose idx 
         sample_map = np.nonzero(can_sample)[0] + self.active_frames_bounds[0]
@@ -350,13 +356,13 @@ class LocalRFDataset(Dataset):
         idx_sample = idx
 
         return {
-            "rgbs": self.all_rgbs[idx_sample], 
-            "loss_weights": self.all_loss_weights[idx_sample], 
-            "invdepths": self.all_invdepths[idx_sample] if self.load_depth else None,
-            "fwd_flow": self.all_fwd_flow[idx_sample] if self.load_flow else None,
-            "fwd_mask": self.all_fwd_mask[idx_sample] if self.load_flow else None,
-            "bwd_flow": self.all_bwd_flow[idx_sample] if self.load_flow else None,
-            "bwd_mask": self.all_bwd_mask[idx_sample] if self.load_flow else None,
+            "rgbs": self.all_rgbs.reshape(-1,3)[idx_sample], 
+            "loss_weights": self.all_loss_weights.reshape(-1,1)[idx_sample], 
+            "invdepths": self.all_invdepths.reshape(-1,1)[idx_sample] if self.load_depth else None,
+            "fwd_flow": self.all_fwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
+            "fwd_mask": self.all_fwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
+            "bwd_flow": self.all_bwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
+            "bwd_mask": self.all_bwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
             "idx": idx, # pixel idx
             "view_ids": view_ids, # pose idx
             "train_test_poses": train_test_poses,
@@ -386,7 +392,7 @@ class LocalRFDataset(Dataset):
         idx_sample = idx
 
         return {
-            "events": self.all_events[idx_sample], 
+            "events": self.all_events.reshape(-1,1)[idx_sample], 
             "idx": idx, # pixel idx
             "view_ids": view_ids, # pose idx
             "mode": "event"

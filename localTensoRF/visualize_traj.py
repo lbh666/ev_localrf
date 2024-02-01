@@ -44,7 +44,7 @@ vizualizer.create_window(width=WIDTH, height=HEIGHT)
 # Step 3 - Add objects to visualizer
 # vizualizer.add_geometry(meshFrame)
 # Step 4 - Get camera lines
-for pose in poses[40:]:
+for pose in poses[:]:
     standardCameraParametersObj  = vizualizer.get_view_control().convert_to_pinhole_camera_parameters()
     cameraLines = open3d.geometry.LineSet.create_camera_visualization(intrinsic=standardCameraParametersObj.intrinsic, 
                                                                       extrinsic=np.linalg.inv(pose),

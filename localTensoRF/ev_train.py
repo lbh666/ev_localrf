@@ -23,8 +23,7 @@ from opt import config_parser
 from renderer import render
 from utils.utils import (get_fwd_bwd_cam2cams, smooth_poses_spline)
 from utils.utils import (N_to_reso, TVLoss, draw_poses, get_pred_flow,
-                         compute_depth_loss, draw_poses_and_boxes)
-
+                         compute_depth_loss, draw_poses_and_boxes, get_warp_rgbs)
 
 def save_transforms(poses_mtx, transform_path, local_tensorfs, train_dataset=None):
     if train_dataset is not None:
@@ -359,8 +358,10 @@ def reconstruction(args):
     time_dataload = 0
     time_forward = 0
     time_optim = 0
+    time_loss = 0
     
     sample_map = None
+    poses = None
     while training:
         optimize_poses = args.lr_R_init > 0 or args.lr_t_init > 0
         t_tmp = time.time()
@@ -383,6 +384,7 @@ def reconstruction(args):
         time_forward += time.time() - t_tmp
 
         # loss
+        t_tmp = time.time()
         if data_blob['mode'] == 'rgb': # image mode
             rgb_train = torch.from_numpy(data_blob["rgbs"]).to(args.device)
             loss_weights = torch.from_numpy(data_blob["loss_weights"]).to(args.device)
@@ -458,12 +460,33 @@ def reconstruction(args):
                 writer.add_scalar("train/loss_tv", loss_tv, global_step=iteration)
                 writer.add_scalar("train/l1_loss", l1_loss, global_step=iteration)
         else:
+            total_loss = 0
             rgb_train = torch.from_numpy(data_blob["events"]).to(args.device)
-            loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
-            total_loss = loss
+            if local_tensorfs.rf_iter[-1] < local_tensorfs.iter_pose:
+                loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
+                total_loss = total_loss + loss
             if args.s3im_weight > 0:
                 s3im_pp = args.s3im_weight * s3im_func(rgb_map.mean(dim=-1, keepdim=True), rgb_train)
                 total_loss += s3im_pp
+            # warp loss
+            if args.loss_warp_weight > 0:
+                ij = ij.view(view_ids.shape[0], -1, 2)
+                if poses is None:
+                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                    target_c2ws = poses[can_sample]
+                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                    img_id_map = img_id_map.astype(np.int64)
+                curr_c2ws = poses[view_ids - train_dataset.active_frames_bounds[0]]
+                target_rgbs = torch.from_numpy(train_dataset.all_rgbs[img_id_map[can_sample]]).to(args.device)
+                warp_rgbs = get_warp_rgbs(depth_map, curr_c2ws.detach(), directions, target_c2ws.detach(), 
+                                        target_rgbs, local_tensorfs.focal(W), local_tensorfs.center(W, H), ij) # (n_target, 3 , n_views, B//n_views)
+                weight_mask = (torch.nonzero(torch.from_numpy(can_sample)).cuda()  - (view_ids - train_dataset.active_frames_bounds[0])[None])[...,None,None].abs()
+                warp_rgbs = warp_rgbs.permute(0, 2, 3, 1).reshape(target_c2ws.shape[0], view_ids.shape[0], -1, 3)
+
+                warp_loss = args.loss_warp_weight*( torch.exp(-weight_mask) * torch.abs(warp_rgbs - rgb_map.reshape(view_ids.shape[0], -1, 3)[None])).mean()
+                total_loss = total_loss + warp_loss
+        time_loss += time.time() - t_tmp
 
         # Optimizes
         t_tmp = time.time()
@@ -498,9 +521,17 @@ def reconstruction(args):
                 n_added_frames += 1
                 last_add_iter = iteration
                 if args.loss_flow_weight_inital > 0:
+                    # starting_frame_id = max(train_dataset.active_frames_bounds[0] - 1, 0)
                     image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
                     sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
                     last_img_idx = np.nonzero(image_mask)[0][-1]
+
+                if args.loss_warp_weight > 0:
+                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                    target_c2ws = poses[can_sample]
+                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                    img_id_map = img_id_map.astype(np.int64)
 
         # Add new RF
         if can_add_rf:
@@ -526,14 +557,21 @@ def reconstruction(args):
                 train_dataset.deactivate_frames(
                     np.argmax(training_frames.cpu().numpy(), axis=0))
                 if args.loss_flow_weight_inital > 0:
+                    starting_frame_id = max(train_dataset.active_frames_bounds[0] - 1, 0)
                     image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
                     sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
                     last_img_idx = np.nonzero(image_mask)[0][-1]
+                if args.loss_warp_weight > 0:
+                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                    target_c2ws = poses[can_sample]
+                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                    img_id_map = img_id_map.astype(np.int64)
                 logger.info(f'current sliding windows (after deactivate): [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
             else:
                 training = False
         ## Log
-        loss = loss.detach().item()
+        # loss = loss.detach().item()
 
         writer.add_scalar(
             "train/density_app_plane_lr",
@@ -595,7 +633,7 @@ def reconstruction(args):
             all_poses = torch.cat([poses_mtx,  RF_mtx_inv], dim=0)
             colours = ["C1"] * poses_mtx.shape[0] + ["C2"] * RF_mtx_inv.shape[0]
             img = draw_poses_and_boxes(all_poses, colours, -t_w2rf.clone(), aabb)
-            writer.add_image("poses/all", (np.transpose(img, (2, 0, 1)) / 255.0).astype(np.float32), iteration)
+            # writer.add_image("poses/all", (np.transpose(img, (2, 0, 1)) / 255.0).astype(np.float32), iteration)
 
             # Get runtime 
             ips = min(args.progress_refresh_rate, iteration + 1) / (time.time() - start_time)
@@ -606,8 +644,8 @@ def reconstruction(args):
                 eta_sec = time_sec_avg * (train_dataset.num_images - train_dataset.active_frames_bounds[1])
                 eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
                 logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f} s," + \
-                        f" forward: {time_forward/1000:.3f} s, optim: {time_optim/1000:.3f} s], ETA:{eta_str}")
-                time_dataload, time_forward, time_optim = 0, 0, 0
+                        f" forward: {time_forward/1000:.3f} s, optim: {time_optim/1000:.3f} s, loss: {time_loss/1000:.3f} s], ETA:{eta_str}")
+                time_dataload, time_forward, time_optim, time_loss = 0, 0, 0, 0
             start_time = time.time()
 
         if (iteration % args.vis_every == 0):
@@ -651,47 +689,47 @@ def reconstruction(args):
                 )
 
                 if not args.skip_TB_images: # default False if not set, will be True if set. 
-                    writer.add_images(
-                        "test/rgb_maps",
-                        torch.stack(rgb_maps_tb, 0),
-                        global_step=iteration,
-                        dataformats="NHWC",
-                    )
-                    writer.add_images(
-                        "test/depth_map",
-                        torch.stack(depth_maps_tb, 0),
-                        global_step=iteration,
-                        dataformats="NHWC",
-                    )
-                    writer.add_images(
-                        "test/gt_maps",
-                        torch.stack(gt_rgbs_tb, 0),
-                        global_step=iteration,
-                        dataformats="NHWC",
-                    )
+                    # writer.add_images(
+                    #     "test/rgb_maps",
+                    #     torch.stack(rgb_maps_tb, 0),
+                    #     global_step=iteration,
+                    #     dataformats="NHWC",
+                    # )
+                    # writer.add_images(
+                    #     "test/depth_map",
+                    #     torch.stack(depth_maps_tb, 0),
+                    #     global_step=iteration,
+                    #     dataformats="NHWC",
+                    # )
+                    # writer.add_images(
+                    #     "test/gt_maps",
+                    #     torch.stack(gt_rgbs_tb, 0),
+                    #     global_step=iteration,
+                    #     dataformats="NHWC",
+                    # )
                     
-                    if len(fwd_flow_cmp_tb) > 0:
-                        writer.add_images(
-                            "test/fwd_flow_cmp",
-                            torch.stack(fwd_flow_cmp_tb, 0)[..., None],
-                            global_step=iteration,
-                            dataformats="NHWC",
-                        )
+                    # if len(fwd_flow_cmp_tb) > 0:
+                    #     # writer.add_images(
+                    #         "test/fwd_flow_cmp",
+                    #         torch.stack(fwd_flow_cmp_tb, 0)[..., None],
+                    #         global_step=iteration,
+                    #         dataformats="NHWC",
+                    #     )
                         
-                        writer.add_images(
-                            "test/bwd_flow_cmp",
-                            torch.stack(bwd_flow_cmp_tb, 0)[..., None],
-                            global_step=iteration,
-                            dataformats="NHWC",
-                        )
+                        # writer.add_images(
+                        #     "test/bwd_flow_cmp",
+                        #     torch.stack(bwd_flow_cmp_tb, 0)[..., None],
+                        #     global_step=iteration,
+                        #     dataformats="NHWC",
+                        # )
                     
-                    if len(depth_err_tb) > 0:
-                        writer.add_images(
-                            "test/depth_cmp",
-                            torch.stack(depth_err_tb, 0)[..., None],
-                            global_step=iteration,
-                            dataformats="NHWC",
-                        )
+                    # if len(depth_err_tb) > 0:
+                        # writer.add_images(
+                        #     "test/depth_cmp",
+                        #     torch.stack(depth_err_tb, 0)[..., None],
+                        #     global_step=iteration,
+                        #     dataformats="NHWC",
+                        # )
 
                     # Clear all TensorBoard's lists
                     for list_tb in [rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_err_tb]:

@@ -492,3 +492,35 @@ def smooth_poses_spline(poses, st=0.5, sr=4, median_prefilter=True):
     smooth_posesnp[:, 0] = -smooth_posesnp[:, 0]
     smooth_posesnp[:, :3, 3] /= scale
     return torch.Tensor(smooth_posesnp.astype(np.float32)).to(poses)
+
+
+def get_warp_rgbs(depth_map, curr_c2ws, directions, target_c2ws, target_rgbs, focal, center, ij):
+    n_views = curr_c2ws.shape[0]
+    n_target = target_c2ws.shape[0]
+    directions = directions.reshape(n_views, -1, 3)
+    _, N, _ = directions.shape
+    depth_map = depth_map.reshape(n_views, -1) # [N_view, batch//N_view]
+    pts = directions * depth_map[..., None] # camera centered
+
+    # convert to world coordiate 
+    new_pts = torch.transpose(torch.bmm(curr_c2ws[:, :3, :3], torch.transpose(pts, 1, 2)), 1, 2)
+    new_pts = new_pts + curr_c2ws[:, None, :3, 3] # world centered
+    new_pts = new_pts.reshape(-1,3) # [B, 3]
+    new_pts = new_pts[None].repeat(n_target,1,1) # [N_target,B,3]
+    # convert to target centered coordinate
+    target_c2ws_inv = inverse_pose(target_c2ws) # [N_target, 3, 4]
+    new_pts = torch.transpose(torch.bmm(target_c2ws_inv[:, :3, :3], torch.transpose(new_pts, 1, 2)), 1, 2)
+    new_pts = new_pts + target_c2ws_inv[:, None, :3, 3]
+    new_ij = pts2px(new_pts, focal, center)
+    
+    # new_ij[0] = new_ij[0] / center[0] - 1
+    # new_ij[1] = new_ij[1] / center[1] - 1
+    new_ij = new_ij / center[None,None] - 1
+
+    new_ij = new_ij.reshape(n_target, n_views, -1, 2)
+    warp_rgbs = torch.nn.functional.grid_sample(target_rgbs.permute(0, 3, 1, 2), new_ij)
+    # warp_rgbs = torch.nn.functional.grid_sample((torch.from_numpy(target_rgbs)).to(new_ij).permute(0, 3, 1, 2), new_ij)
+
+    return warp_rgbs
+
+

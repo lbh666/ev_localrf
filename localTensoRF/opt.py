@@ -210,6 +210,8 @@ def config_parser(cmd=None):
     parser.add_argument(
         "--eventdir", type=str, default=r"E:\TNT\training_data\images\Church_3000_upsampled_x2_2_fps\acc_events", help="input data directory"
     )
+    parser.add_argument("--loss_warp_weight", type=float, default=0.5)
+    parser.add_argument("--max_warp_frames", type=int, default=10)
 
     if cmd is not None:
         return parser.parse_args(cmd)
