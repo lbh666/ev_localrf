@@ -401,7 +401,7 @@ class LocalRFDataset(Dataset):
     def sample(self, batch_size, is_refining, optimize_poses, n_views=16):
         event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
         
-        if event_ratio * 0.5 > random.uniform(0, 1):
+        if event_ratio > random.uniform(0, 1):
             return self.sample_event(batch_size, is_refining, optimize_poses, n_views)
         else:
             return self.sample_img(batch_size, is_refining, optimize_poses, n_views)
@@ -431,7 +431,67 @@ class LocalRFDataset(Dataset):
         idx_sample = idx
 
         return {
-            "events": self.all_events[idx_sample], 
+            "events": self.all_events.reshape(-1,1)[idx_sample], 
             "idx": idx, # pixel idx
             "view_ids": view_ids, # pose idx
+            "mode": "event"
         }
+    
+    def sample_image_patch(self, batch_size, is_refining, optimize_poses, n_views=16):
+        active_test_mask = self.test_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]
+        test_ratio = active_test_mask.mean()
+        if optimize_poses:
+            train_test_poses = test_ratio > random.uniform(0, 1)
+        else:
+            train_test_poses = False
+
+        # test or train sample mode 
+        inclusion_mask = active_test_mask if train_test_poses else 1 - active_test_mask
+
+        # where can we sample, excluding the event frame
+        can_sample = (1 - self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]> 0 ) & (inclusion_mask > 0)
+
+        # map raw idx to pose idx 
+        sample_map = np.nonzero(can_sample)[0] + self.active_frames_bounds[0]
+        
+        # image raw idx based on number of frame where can sample 
+        raw_samples = np.random.randint(0, can_sample.sum(), n_views, dtype=np.int64)
+
+        # map pose idx to image idx
+        img_id_map = np.cumsum(1 - self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]]) - 1
+        img_id_map = img_id_map.astype(np.int64)
+
+        raw_samples = np.random.randint(0, can_sample.sum(), size=(n_views,), dtype=np.int64)
+        view_ids = sample_map[raw_samples]
+        patch_size = int((batch_size // n_views)**(1/2))
+
+        i, j = np.random.randint(0, self.H  - patch_size + 1, size=[n_views,1,1]), np.random.randint(0, self.W  - patch_size + 1, size=[n_views,1,1])
+        di, dj = np.meshgrid(np.arange(patch_size), np.arange(patch_size), indexing='ij')
+        di, dj = di[None].repeat(n_views, 0), dj[None].repeat(n_views, 0)
+        di, dj = di + i, dj + j
+        idx = dj + di * self.W + img_id_map[(view_ids - self.active_frames_bounds[0]).astype(np.int64)][..., None] * self.n_px_per_frame
+        idx = idx.reshape(-1)
+
+        idx_sample = idx
+
+        return {
+            "rgbs": self.all_rgbs.reshape(-1,3)[idx_sample], 
+            "loss_weights": self.all_loss_weights.reshape(-1,1)[idx_sample], 
+            "invdepths": self.all_invdepths.reshape(-1,1)[idx_sample] if self.load_depth else None,
+            "fwd_flow": self.all_fwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
+            "fwd_mask": self.all_fwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
+            "bwd_flow": self.all_bwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
+            "bwd_mask": self.all_bwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
+            "idx": idx, # pixel idx
+            "view_ids": view_ids, # pose idx
+            "train_test_poses": train_test_poses,
+            "mode": "rgb"
+        }
+    
+    def sample_patch(self, batch_size, is_refining, optimize_poses, n_views=16):
+        event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
+        
+        if event_ratio > random.uniform(0, 1):
+            return self.sample_event_patch(batch_size, is_refining, optimize_poses, n_views)
+        else:
+            return self.sample_image_patch(batch_size, is_refining, optimize_poses, n_views)
