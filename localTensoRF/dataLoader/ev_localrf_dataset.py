@@ -12,14 +12,16 @@ import glob
 from joblib import delayed, Parallel
 from torch.utils.data import Dataset
 from utils.utils import decode_flow
-import json
+import json, kornia
+
+laplace = kornia.filters.Laplacian(5)
 
 def concatenate_append(old, new):
-    # new = np.concatenate(new, 0).reshape(-1, dim)
+    # new = torch.cat(new, 0).reshape(-1, dim)
     if old is not None:
-        new = np.concatenate([old, *new], 0)
+        new = torch.cat([old, *new], 0)
     else:
-        new = np.concatenate(new, 0)
+        new = torch.cat(new, 0)
     return new
 
 def get_digit(path):
@@ -43,7 +45,8 @@ class LocalRFDataset(Dataset):
         test_frame_every=10,
         frame_step=1,
         events_in_imgs = 2,
-        eventdir= None
+        eventdir= None,
+        device = "cpu"
     ):
         self.root_dir = datadir
         self.split = split
@@ -53,6 +56,7 @@ class LocalRFDataset(Dataset):
         self.load_flow = load_flow
         self.frame_step = frame_step
         self.events_in_imgs = events_in_imgs
+        self.device = device
 
         self.image_paths = sorted(glob.glob(os.path.join(self.root_dir, "images", "*")))
         self.image_idx = [get_digit(x) for x in self.image_paths]
@@ -212,13 +216,13 @@ class LocalRFDataset(Dataset):
                 mask = None
 
             return {
-                "img": img[np.newaxis], 
-                "invdepth": invdepth[np.newaxis] if invdepth is not None else None,
-                "fwd_flow": fwd_flow[np.newaxis] if fwd_flow is not None else None,
-                "fwd_mask": fwd_mask[np.newaxis] if fwd_mask is not None else None,
-                "bwd_flow": bwd_flow[np.newaxis] if bwd_flow is not None else None,
-                "bwd_mask": bwd_mask[np.newaxis] if bwd_mask is not None else None,
-                "mask": mask[np.newaxis] if mask else None,
+                "img": torch.from_numpy(img[np.newaxis]).to(self.device), 
+                "invdepth": torch.from_numpy(invdepth[np.newaxis]).to(self.device) if invdepth is not None else None,
+                "fwd_flow": torch.from_numpy(fwd_flow[np.newaxis]).to(self.device) if fwd_flow is not None else None,
+                "fwd_mask": torch.from_numpy(fwd_mask[np.newaxis]).to(self.device) if fwd_mask is not None else None,
+                "bwd_flow": torch.from_numpy(bwd_flow[np.newaxis]).to(self.device) if bwd_flow is not None else None,
+                "bwd_mask": torch.from_numpy(bwd_mask[np.newaxis]).to(self.device) if bwd_mask is not None else None,
+                "mask": torch.from_numpy(mask[np.newaxis]).to(self.device) if mask else None,
             }
 
         def read_event(i):
@@ -239,7 +243,7 @@ class LocalRFDataset(Dataset):
                     fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             evdata = img * np.exp(data * 0.2)
             evdata = np.clip(evdata, 0, 1)
-            return {"events": evdata[np.newaxis, ..., np.newaxis]}
+            return {"events": torch.from_numpy(evdata[np.newaxis, ..., np.newaxis]).to(self.device)}
         
         def read_image_and_event(i):
             image_path = self.all_paths[i]
@@ -263,9 +267,7 @@ class LocalRFDataset(Dataset):
         all_events = [data["events"] for data in all_data if data and "events" in data]
 
         all_laplacian = [
-                np.ones_like(img[0][..., 0]) * cv2.Laplacian(
-                            cv2.cvtColor((img[0]*255).astype(np.uint8), cv2.COLOR_RGB2GRAY), cv2.CV_32F
-                        ).var()
+                torch.ones_like(img[0, ..., 0]).to(self.device) * laplace(img.permute(0, 3, 1, 2).mean(dim=1, keepdim=True)).var()
             for img in all_rgbs
         ]
         all_loss_weights = [laplacian if mask is None else laplacian * mask for laplacian, mask in zip(all_laplacian, all_mask)]
@@ -275,14 +277,14 @@ class LocalRFDataset(Dataset):
         self.H, self.W = 1080, 1920
 
         if self.split != "train":
-            self.all_rgbs = np.concatenate(all_rgbs, 0)
+            self.all_rgbs = torch.cat(all_rgbs, 0)
             if self.load_depth:
-                self.all_invdepths = np.concatenate(all_invdepths, 0)
+                self.all_invdepths = torch.cat(all_invdepths, 0)
             if self.load_flow:
-                self.all_fwd_flow = np.concatenate(all_fwd_flow, 0)
-                self.all_fwd_mask = np.concatenate(all_fwd_mask, 0)
-                self.all_bwd_flow = np.concatenate(all_bwd_flow, 0)
-                self.all_bwd_mask = np.concatenate(all_bwd_mask, 0)
+                self.all_fwd_flow = torch.cat(all_fwd_flow, 0)
+                self.all_fwd_mask = torch.cat(all_fwd_mask, 0)
+                self.all_bwd_flow = torch.cat(all_bwd_flow, 0)
+                self.all_bwd_mask = torch.cat(all_bwd_mask, 0)
         else:
             self.all_rgbs = concatenate_append(self.all_rgbs, all_rgbs) if all_rgbs else self.all_rgbs
             self.all_events = concatenate_append(self.all_events, all_events) if all_events else self.all_events
@@ -363,8 +365,8 @@ class LocalRFDataset(Dataset):
             "fwd_mask": self.all_fwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
             "bwd_flow": self.all_bwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
             "bwd_mask": self.all_bwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
-            "idx": idx, # pixel idx
-            "view_ids": view_ids, # pose idx
+            "idx": torch.from_numpy(idx).to(self.device), # pixel idx
+            "view_ids": torch.from_numpy(view_ids).to(self.device), # pose idx
             "train_test_poses": train_test_poses,
             "mode": "rgb"
         }
@@ -393,15 +395,15 @@ class LocalRFDataset(Dataset):
 
         return {
             "events": self.all_events.reshape(-1,1)[idx_sample], 
-            "idx": idx, # pixel idx
-            "view_ids": view_ids, # pose idx
+            "idx": torch.from_numpy(idx).to(self.device), # pixel idx
+            "view_ids": torch.from_numpy(view_ids).to(self.device), # pose idx
             "mode": "event"
         }
     
     def sample(self, batch_size, is_refining, optimize_poses, n_views=16):
         event_ratio = self.event_mask[self.active_frames_bounds[0] : self.active_frames_bounds[1]].mean()
         
-        if event_ratio > random.uniform(0, 1):
+        if event_ratio * 0.5 > random.uniform(0, 1):
             return self.sample_event(batch_size, is_refining, optimize_poses, n_views)
         else:
             return self.sample_img(batch_size, is_refining, optimize_poses, n_views)
@@ -432,8 +434,8 @@ class LocalRFDataset(Dataset):
 
         return {
             "events": self.all_events.reshape(-1,1)[idx_sample], 
-            "idx": idx, # pixel idx
-            "view_ids": view_ids, # pose idx
+            "idx": torch.from_numpy(idx).to(self.device), # pixel idx
+            "view_ids": torch.from_numpy(view_ids).to(self.device), # pose idx
             "mode": "event"
         }
     
@@ -482,8 +484,8 @@ class LocalRFDataset(Dataset):
             "fwd_mask": self.all_fwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
             "bwd_flow": self.all_bwd_flow.reshape(-1,2)[idx_sample] if self.load_flow else None,
             "bwd_mask": self.all_bwd_mask.reshape(-1,1)[idx_sample] if self.load_flow else None,
-            "idx": idx, # pixel idx
-            "view_ids": view_ids, # pose idx
+            "idx": torch.from_numpy(idx).to(self.device), # pixel idx
+            "view_ids": torch.from_numpy(view_ids).to(self.device), # pose idx
             "train_test_poses": train_test_poses,
             "mode": "rgb"
         }

@@ -1,11 +1,11 @@
-name: final_v0
+name: final_v0_speedup
 description: ""
 
 workspace: lbh 
 project: Ev-NeRF 
 resources:
   resource_pool: rtx2080ti 
-  slots_per_trial: 2
+  slots_per_trial: 1
 max_restarts: 1
 searcher:
   name: single

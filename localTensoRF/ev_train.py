@@ -234,7 +234,8 @@ def reconstruction(args):
         subsequence=args.subsequence,
         frame_step=args.frame_step,
         events_in_imgs=args.events_in_imgs,
-        eventdir=args.eventdir
+        eventdir=args.eventdir,
+        device=args.device
     )
     test_dataset = LocalRFDataset(
         f"{args.datadir}",
@@ -247,7 +248,8 @@ def reconstruction(args):
         subsequence=args.subsequence,
         frame_step=args.frame_step,
         events_in_imgs=args.events_in_imgs,
-        eventdir=args.eventdir
+        eventdir=args.eventdir,
+        device=args.device
     )
     near_far = train_dataset.near_far
 
@@ -368,8 +370,8 @@ def reconstruction(args):
         data_blob = train_dataset.sample(args.batch_size, local_tensorfs.is_refining, optimize_poses, n_views=args.n_views)
         time_dataload += time.time() - t_tmp
         train_test_poses = data_blob["train_test_poses"] if "train_test_poses" in data_blob else False
-        view_ids = torch.from_numpy(data_blob["view_ids"]).to(args.device)
-        ray_idx = torch.from_numpy(data_blob["idx"]).to(args.device)
+        view_ids = data_blob["view_ids"]
+        ray_idx = data_blob["idx"]
         reg_loss_weight = local_tensorfs.lr_factor ** (local_tensorfs.rf_iter[-1])
 
         t_tmp = time.time()
@@ -386,8 +388,8 @@ def reconstruction(args):
         # loss
         t_tmp = time.time()
         if data_blob['mode'] == 'rgb': # image mode
-            rgb_train = torch.from_numpy(data_blob["rgbs"]).to(args.device)
-            loss_weights = torch.from_numpy(data_blob["loss_weights"]).to(args.device)
+            rgb_train = data_blob["rgbs"]
+            loss_weights = data_blob["loss_weights"]
 
             loss = 0.25 * ((torch.abs(rgb_map - rgb_train)) * loss_weights) / loss_weights.mean()
                 
@@ -421,11 +423,11 @@ def reconstruction(args):
                 cam2world = cam2world[image_mask]
                 directions = directions.view(view_ids.shape[0], -1, 3)
                 ij = ij.view(view_ids.shape[0], -1, 2)
-                fwd_flow = torch.from_numpy(data_blob["fwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
-                fwd_mask = torch.from_numpy(data_blob["fwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
+                fwd_flow = data_blob["fwd_flow"].view(view_ids.shape[0], -1, 2)
+                fwd_mask = data_blob["fwd_mask"].view(view_ids.shape[0], -1)
                 fwd_mask[view_ids == last_img_idx] = 0
-                bwd_flow = torch.from_numpy(data_blob["bwd_flow"]).to(args.device).view(view_ids.shape[0], -1, 2)
-                bwd_mask = torch.from_numpy(data_blob["bwd_mask"]).to(args.device).view(view_ids.shape[0], -1)
+                bwd_flow = data_blob["bwd_flow"].view(view_ids.shape[0], -1, 2)
+                bwd_mask = data_blob["bwd_mask"].view(view_ids.shape[0], -1)
                 fwd_cam2cams, bwd_cam2cams = get_fwd_bwd_cam2cams(cam2world, sample_map[view_ids - starting_frame_id])
                         
                 pts = directions * depth_map[..., None]
@@ -445,7 +447,7 @@ def reconstruction(args):
             if local_tensorfs.regularize and args.loss_depth_weight_inital > 0:
                 if args.fov == 360:
                     raise NotImplementedError
-                invdepths = torch.from_numpy(data_blob["invdepths"]).to(args.device)
+                invdepths = data_blob["invdepths"]
                 invdepths = invdepths.view(view_ids.shape[0], -1)
                 _, _, depth_loss_arr = compute_depth_loss(1 / depth_map.clamp(1e-6), invdepths)
                 depth_loss_arr[depth_loss_arr > torch.quantile(depth_loss_arr, 0.8, dim=1)[..., None]] = 0
@@ -461,7 +463,7 @@ def reconstruction(args):
                 writer.add_scalar("train/l1_loss", l1_loss, global_step=iteration)
         else:
             total_loss = 0
-            rgb_train = torch.from_numpy(data_blob["events"]).to(args.device)
+            rgb_train = data_blob["events"]
             if local_tensorfs.rf_iter[-1] < local_tensorfs.iter_pose:
                 loss =  0.25 * torch.abs(rgb_map.mean(dim=-1, keepdim=True) - rgb_train).mean()
                 total_loss = total_loss + loss
@@ -471,15 +473,14 @@ def reconstruction(args):
             # warp loss
             if args.loss_warp_weight > 0:
                 ij = ij.view(view_ids.shape[0], -1, 2)
-                if poses is None:
-                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
-                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
-                    target_c2ws = poses[can_sample]
-                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
-                    img_id_map = img_id_map.astype(np.int64)
+                poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                target_c2ws = poses[can_sample]
+                img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                img_id_map = img_id_map.astype(np.int64)
                 curr_c2ws = poses[view_ids - train_dataset.active_frames_bounds[0]]
-                target_rgbs = torch.from_numpy(train_dataset.all_rgbs[img_id_map[can_sample]]).to(args.device)
-                warp_rgbs = get_warp_rgbs(depth_map, curr_c2ws.detach(), directions, target_c2ws.detach(), 
+                target_rgbs = train_dataset.all_rgbs[img_id_map[can_sample]]
+                warp_rgbs = get_warp_rgbs(depth_map, curr_c2ws, directions, target_c2ws, 
                                         target_rgbs, local_tensorfs.focal(W), local_tensorfs.center(W, H), ij) # (n_target, 3 , n_views, B//n_views)
                 weight_mask = (torch.nonzero(torch.from_numpy(can_sample)).cuda()  - (view_ids - train_dataset.active_frames_bounds[0])[None])[...,None,None].abs()
                 warp_rgbs = warp_rgbs.permute(0, 2, 3, 1).reshape(target_c2ws.shape[0], view_ids.shape[0], -1, 3)
@@ -526,12 +527,12 @@ def reconstruction(args):
                     sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
                     last_img_idx = np.nonzero(image_mask)[0][-1]
 
-                if args.loss_warp_weight > 0:
-                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
-                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
-                    target_c2ws = poses[can_sample]
-                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
-                    img_id_map = img_id_map.astype(np.int64)
+                # if args.loss_warp_weight > 0:
+                #     poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                #     can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                #     target_c2ws = poses[can_sample]
+                #     img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                #     img_id_map = img_id_map.astype(np.int64)
 
         # Add new RF
         if can_add_rf:
@@ -561,12 +562,12 @@ def reconstruction(args):
                     image_mask = 1 - train_dataset.event_mask[starting_frame_id : train_dataset.active_frames_bounds[1]] > 0
                     sample_map = torch.from_numpy((np.cumsum(image_mask) - 1).astype(np.int64)).to(view_ids)
                     last_img_idx = np.nonzero(image_mask)[0][-1]
-                if args.loss_warp_weight > 0:
-                    poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
-                    can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
-                    target_c2ws = poses[can_sample]
-                    img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
-                    img_id_map = img_id_map.astype(np.int64)
+                # if args.loss_warp_weight > 0:
+                #     poses = local_tensorfs.get_cam2world(starting_id=train_dataset.active_frames_bounds[0])[:train_dataset.active_frames_bounds[1]-train_dataset.active_frames_bounds[0]]
+                #     can_sample, _ = train_dataset.get_can_sample_img(optimize_poses=False)
+                #     target_c2ws = poses[can_sample]
+                #     img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
+                #     img_id_map = img_id_map.astype(np.int64)
                 logger.info(f'current sliding windows (after deactivate): [{train_dataset.active_frames_bounds[0]}, {train_dataset.active_frames_bounds[1]})')
             else:
                 training = False
