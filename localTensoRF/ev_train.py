@@ -221,6 +221,10 @@ def reconstruction(args):
     args.TV_weight_density = args.TV_weight_density * args.prog_speedup_factor
     args.TV_weight_app = args.TV_weight_app * args.prog_speedup_factor
     
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    
     # init dataset
     train_dataset = LocalRFDataset(
         f"{args.datadir}",
@@ -361,20 +365,29 @@ def reconstruction(args):
     time_forward = 0
     time_optim = 0
     time_loss = 0
+    time_log = 0
     
     sample_map = None
     poses = None
     while training:
         optimize_poses = args.lr_R_init > 0 or args.lr_t_init > 0
-        t_tmp = time.time()
+        
+        torch.cuda.synchronize()
+        start.record()
         data_blob = train_dataset.sample(args.batch_size, local_tensorfs.is_refining, optimize_poses, n_views=args.n_views)
-        time_dataload += time.time() - t_tmp
+        for k in data_blob.keys():
+            if isinstance(data_blob[k], torch.Tensor) and data_blob[k].device != torch.device(args.device):
+                data_blob[k] = data_blob[k].to(args.device)
+        end.record()
+        torch.cuda.synchronize()
+        time_dataload += start.elapsed_time(end)
         train_test_poses = data_blob["train_test_poses"] if "train_test_poses" in data_blob else False
         view_ids = data_blob["view_ids"]
         ray_idx = data_blob["idx"]
         reg_loss_weight = local_tensorfs.lr_factor ** (local_tensorfs.rf_iter[-1])
 
-        t_tmp = time.time()
+        torch.cuda.synchronize()
+        start.record()
         rgb_map, depth_map, directions, ij = local_tensorfs(
             ray_idx,
             view_ids,
@@ -383,10 +396,13 @@ def reconstruction(args):
             is_train=True,
             test_id=train_test_poses,
         )
-        time_forward += time.time() - t_tmp
+        end.record()
+        torch.cuda.synchronize()
+        time_forward += start.elapsed_time(end)
 
         # loss
-        t_tmp = time.time()
+        torch.cuda.synchronize()
+        start.record()
         if data_blob['mode'] == 'rgb': # image mode
             rgb_train = data_blob["rgbs"]
             loss_weights = data_blob["loss_weights"]
@@ -479,7 +495,7 @@ def reconstruction(args):
                 img_id_map = np.cumsum(1 - train_dataset.event_mask[train_dataset.active_frames_bounds[0] : train_dataset.active_frames_bounds[1]]) - 1
                 img_id_map = img_id_map.astype(np.int64)
                 curr_c2ws = poses[view_ids - train_dataset.active_frames_bounds[0]]
-                target_rgbs = train_dataset.all_rgbs[img_id_map[can_sample]]
+                target_rgbs = train_dataset.all_rgbs[img_id_map[can_sample]].to(args.device)
                 warp_rgbs = get_warp_rgbs(depth_map, curr_c2ws, directions, target_c2ws, 
                                         target_rgbs, local_tensorfs.focal(W), local_tensorfs.center(W, H), ij) # (n_target, 3 , n_views, B//n_views)
                 weight_mask = (torch.nonzero(torch.from_numpy(can_sample)).cuda()  - (view_ids - train_dataset.active_frames_bounds[0])[None])[...,None,None].abs()
@@ -487,10 +503,13 @@ def reconstruction(args):
 
                 warp_loss = args.loss_warp_weight*( torch.exp(-weight_mask) * torch.abs(warp_rgbs - rgb_map.reshape(view_ids.shape[0], -1, 3)[None])).mean()
                 total_loss = total_loss + warp_loss
-        time_loss += time.time() - t_tmp
+        end.record()
+        torch.cuda.synchronize()
+        time_loss += start.elapsed_time(end)
 
         # Optimizes
-        t_tmp = time.time()
+        torch.cuda.synchronize()
+        start.record()
         if train_test_poses:
             can_add_rf = False
             if optimize_poses:
@@ -498,7 +517,9 @@ def reconstruction(args):
         else:
             can_add_rf = local_tensorfs.optimizer_step(total_loss, optimize_poses)
             training |= train_dataset.active_frames_bounds[1] != train_dataset.num_images
-        time_optim += time.time() - t_tmp
+        end.record()
+        torch.cuda.synchronize()
+        time_optim += start.elapsed_time(end)
 
         ## Progressive optimization
         if not local_tensorfs.is_refining:
@@ -574,6 +595,8 @@ def reconstruction(args):
         ## Log
         # loss = loss.detach().item()
 
+        torch.cuda.synchronize()
+        start.record()
         writer.add_scalar(
             "train/density_app_plane_lr",
             local_tensorfs.rf_optimizer.param_groups[0]["lr"],
@@ -596,34 +619,36 @@ def reconstruction(args):
             global_step=iteration,
         )
 
-        writer.add_scalar(
-            "train/focal", local_tensorfs.focal(W), global_step=iteration
-        )
-        writer.add_scalar(
-            "train/center0", local_tensorfs.center(W, H)[0].item(), global_step=iteration
-        )
-        writer.add_scalar(
-            "train/center1", local_tensorfs.center(W, H)[1].item(), global_step=iteration
-        )
+        # writer.add_scalar(
+        #     "train/focal", local_tensorfs.focal(W), global_step=iteration
+        # )
+        # writer.add_scalar(
+        #     "train/center0", local_tensorfs.center(W, H)[0].item(), global_step=iteration
+        # )
+        # writer.add_scalar(
+        #     "train/center1", local_tensorfs.center(W, H)[1].item(), global_step=iteration
+        # )
 
-        writer.add_scalar(
-            "active_frames_bounds/0", train_dataset.active_frames_bounds[0], global_step=iteration
-        )
-        writer.add_scalar(
-            "active_frames_bounds/1", train_dataset.active_frames_bounds[1], global_step=iteration
-        )
+        # writer.add_scalar(
+        #     "active_frames_bounds/0", train_dataset.active_frames_bounds[0], global_step=iteration
+        # )
+        # writer.add_scalar(
+        #     "active_frames_bounds/1", train_dataset.active_frames_bounds[1], global_step=iteration
+        # )
 
-        for index, blending_weights in enumerate(
-            torch.permute(local_tensorfs.blending_weights, [1, 0])
-        ):
-            active_cam_indices = torch.nonzero(blending_weights)
-            writer.add_scalar(
-                f"tensorf_bounds/rf{index}_b0", active_cam_indices[0], global_step=iteration
-            )
-            writer.add_scalar(
-                f"tensorf_bounds/rf{index}_b1", active_cam_indices[-1], global_step=iteration
-            )
-
+        # for index, blending_weights in enumerate(
+        #     torch.permute(local_tensorfs.blending_weights, [1, 0])
+        # ):
+        #     active_cam_indices = torch.nonzero(blending_weights)
+        #     writer.add_scalar(
+        #         f"tensorf_bounds/rf{index}_b0", active_cam_indices[0], global_step=iteration
+        #     )
+        #     writer.add_scalar(
+        #         f"tensorf_bounds/rf{index}_b1", active_cam_indices[-1], global_step=iteration
+        #     )
+        end.record()
+        torch.cuda.synchronize()
+        time_log += start.elapsed_time(end)
         # Print the current values of the losses.
         if iteration % args.progress_refresh_rate == 0:
             # All poses visualization
@@ -644,9 +669,9 @@ def reconstruction(args):
                 time_sec_avg = total_time / (train_dataset.active_frames_bounds[1] - 0 + 1)
                 eta_sec = time_sec_avg * (train_dataset.num_images - train_dataset.active_frames_bounds[1])
                 eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
-                logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f} s," + \
-                        f" forward: {time_forward/1000:.3f} s, optim: {time_optim/1000:.3f} s, loss: {time_loss/1000:.3f} s], ETA:{eta_str}")
-                time_dataload, time_forward, time_optim, time_loss = 0, 0, 0, 0
+                logger.info(f"Iteration {iteration:06d}: {ips:.2f} it/s, Time consumed: [data: {time_dataload/1000:.3f} ms," + \
+                        f" forward: {time_forward/1000:.3f} ms, optim: {time_optim/1000:.3f} ms, loss: {time_loss/1000:.3f} ms, log: {time_log/1000:.3f} ms], ETA:{eta_str}")
+                time_dataload, time_forward, time_optim, time_loss, time_log = 0, 0, 0, 0, 0 
             start_time = time.time()
 
         if (iteration % args.vis_every == 0):
@@ -690,47 +715,47 @@ def reconstruction(args):
                 )
 
                 if not args.skip_TB_images: # default False if not set, will be True if set. 
-                    # writer.add_images(
-                    #     "test/rgb_maps",
-                    #     torch.stack(rgb_maps_tb, 0),
-                    #     global_step=iteration,
-                    #     dataformats="NHWC",
-                    # )
-                    # writer.add_images(
-                    #     "test/depth_map",
-                    #     torch.stack(depth_maps_tb, 0),
-                    #     global_step=iteration,
-                    #     dataformats="NHWC",
-                    # )
-                    # writer.add_images(
-                    #     "test/gt_maps",
-                    #     torch.stack(gt_rgbs_tb, 0),
-                    #     global_step=iteration,
-                    #     dataformats="NHWC",
-                    # )
+                    writer.add_images(
+                        "test/rgb_maps",
+                        torch.stack(rgb_maps_tb, 0),
+                        global_step=iteration,
+                        dataformats="NHWC",
+                    )
+                    writer.add_images(
+                        "test/depth_map",
+                        torch.stack(depth_maps_tb, 0),
+                        global_step=iteration,
+                        dataformats="NHWC",
+                    )
+                    writer.add_images(
+                        "test/gt_maps",
+                        torch.stack(gt_rgbs_tb, 0),
+                        global_step=iteration,
+                        dataformats="NHWC",
+                    )
                     
-                    # if len(fwd_flow_cmp_tb) > 0:
-                    #     # writer.add_images(
-                    #         "test/fwd_flow_cmp",
-                    #         torch.stack(fwd_flow_cmp_tb, 0)[..., None],
-                    #         global_step=iteration,
-                    #         dataformats="NHWC",
-                    #     )
+                    if len(fwd_flow_cmp_tb) > 0:
+                        writer.add_images(
+                            "test/fwd_flow_cmp",
+                            torch.stack(fwd_flow_cmp_tb, 0)[..., None],
+                            global_step=iteration,
+                            dataformats="NHWC",
+                        )
                         
-                        # writer.add_images(
-                        #     "test/bwd_flow_cmp",
-                        #     torch.stack(bwd_flow_cmp_tb, 0)[..., None],
-                        #     global_step=iteration,
-                        #     dataformats="NHWC",
-                        # )
+                        writer.add_images(
+                            "test/bwd_flow_cmp",
+                            torch.stack(bwd_flow_cmp_tb, 0)[..., None],
+                            global_step=iteration,
+                            dataformats="NHWC",
+                        )
                     
-                    # if len(depth_err_tb) > 0:
-                        # writer.add_images(
-                        #     "test/depth_cmp",
-                        #     torch.stack(depth_err_tb, 0)[..., None],
-                        #     global_step=iteration,
-                        #     dataformats="NHWC",
-                        # )
+                    if len(depth_err_tb) > 0:
+                        writer.add_images(
+                            "test/depth_cmp",
+                            torch.stack(depth_err_tb, 0)[..., None],
+                            global_step=iteration,
+                            dataformats="NHWC",
+                        )
 
                     # Clear all TensorBoard's lists
                     for list_tb in [rgb_maps_tb, depth_maps_tb, gt_rgbs_tb, fwd_flow_cmp_tb, bwd_flow_cmp_tb, depth_err_tb]:
